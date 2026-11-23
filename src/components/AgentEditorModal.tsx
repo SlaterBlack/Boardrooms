@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import type { AgentConfig, Provider } from '../../shared/boardroom'
+import { createId } from '../createId'
 import Modal from './Modal'
 
 interface AgentEditorModalProps {
@@ -23,7 +24,7 @@ function defaultModel(provider: Provider): string {
 function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModalProps) {
   const [draft, setDraft] = useState<AgentConfig>(() =>
     agent ?? {
-      id: crypto.randomUUID(),
+      id: createId(),
       name: '',
       role: '',
       provider: 'openai',

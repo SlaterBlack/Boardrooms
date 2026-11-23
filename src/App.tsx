@@ -11,6 +11,7 @@ import MeetingEditorModal, {
   type NewMeetingDetails,
 } from './components/MeetingEditorModal'
 import MeetingRoom from './components/MeetingRoom'
+import { createId } from './createId'
 import './App.css'
 
 const AGENT_STORAGE_KEY = 'boardrooms.agents'
@@ -314,7 +315,7 @@ function App() {
   function createMeeting(details: NewMeetingDetails) {
     const now = new Date().toISOString()
     const meeting: Meeting = {
-      id: crypto.randomUUID(),
+      id: createId(),
       ...details,
       agents: details.agents.map((agent) => ({ ...agent })),
       createdAt: now,
