@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from 'react'
-import type { AgentConfig, Provider } from '../../shared/boardroom'
+import { useEffect, useState, type FormEvent } from 'react'
+import type { AgentConfig, Provider, ProviderModel } from '../../shared/boardroom'
 import { createId } from '../createId'
 import Modal from './Modal'
 
@@ -8,6 +8,13 @@ interface AgentEditorModalProps {
   onClose: () => void
   onSave: (agent: AgentConfig) => void
   onDelete: (agentId: string) => void
+}
+
+interface ProviderModelState {
+  provider: Provider
+  status: 'loading' | 'loaded' | 'error'
+  models: ProviderModel[]
+  error: string
 }
 
 function defaultModel(provider: Provider): string {
@@ -19,6 +26,14 @@ function defaultModel(provider: Provider): string {
     case 'openrouter':
       return 'openai/gpt-4o-mini'
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isProviderModel(value: unknown): value is ProviderModel {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string'
 }
 
 function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModalProps) {
@@ -34,6 +49,60 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
       instructions: '',
     },
   )
+  const [providerModelState, setProviderModelState] = useState<ProviderModelState>(() => ({
+    provider: agent?.provider ?? 'openai',
+    status: 'loading',
+    models: [],
+    error: '',
+  }))
+  const models =
+    providerModelState.provider === draft.provider ? providerModelState.models : []
+  const modelStatus =
+    providerModelState.provider === draft.provider ? providerModelState.status : 'loading'
+  const modelError =
+    providerModelState.provider === draft.provider ? providerModelState.error : ''
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    async function loadModels() {
+      try {
+        const response = await fetch(`/api/providers/${draft.provider}/models`, {
+          signal: controller.signal,
+        })
+        const result: unknown = await response.json()
+        if (!response.ok) {
+          const message =
+            isRecord(result) && typeof result.error === 'string'
+              ? result.error
+              : 'Could not load models.'
+          throw new Error(message)
+        }
+        if (!isRecord(result) || !Array.isArray(result.models)) {
+          throw new Error('The provider returned an invalid model list.')
+        }
+
+        const loadedModels = result.models.filter(isProviderModel)
+        setProviderModelState({
+          provider: draft.provider,
+          status: 'loaded',
+          models: loadedModels,
+          error: '',
+        })
+      } catch (error) {
+        if (controller.signal.aborted) return
+        setProviderModelState({
+          provider: draft.provider,
+          status: 'error',
+          models: [],
+          error: error instanceof Error ? error.message : 'Could not load models.',
+        })
+      }
+    }
+
+    void loadModels()
+    return () => controller.abort()
+  }, [draft.provider])
 
   function update(changes: Partial<AgentConfig>) {
     setDraft((current) => ({ ...current, ...changes }))
@@ -98,13 +167,29 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
           </label>
           <label className="modal-field">
             Model ID
-            <input
-              maxLength={120}
+            <select
               onChange={(event) => update({ model: event.target.value })}
-              placeholder={draft.provider === 'openrouter' ? 'e.g. openai/gpt-4o-mini' : 'Provider model ID'}
               required
               value={draft.model}
-            />
+            >
+              {!models.some((model) => model.id === draft.model) && draft.model && (
+                <option value={draft.model}>Current model: {draft.model}</option>
+              )}
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name === model.id ? model.id : `${model.name} (${model.id})`}
+                </option>
+              ))}
+            </select>
+            {modelStatus === 'loading' && (
+              <span className="field-hint" role="status">Loading available models…</span>
+            )}
+            {modelStatus === 'error' && (
+              <span className="field-hint" role="status">{modelError}</span>
+            )}
+            {modelStatus === 'loaded' && models.length === 0 && (
+              <span className="field-hint" role="status">No models are available.</span>
+            )}
           </label>
         </div>
 

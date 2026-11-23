@@ -14,6 +14,7 @@ import {
   matchesAccessPassword,
 } from './auth.ts'
 import { BoardroomInputError, parseBoardroomInput, runBoardroom } from './boardroom.ts'
+import { listProviderModels, ProviderModelsError } from './models.ts'
 
 const app = express()
 const port = Number(process.env.PORT ?? 3001)
@@ -130,6 +131,25 @@ app.get('/api/providers', (_request, response) => {
     openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
   }
   response.json({ providers: availability })
+})
+
+app.get('/api/providers/:provider/models', async (request, response) => {
+  const provider = request.params.provider
+  if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'openrouter') {
+    response.status(400).json({ error: 'Unsupported provider.' })
+    return
+  }
+
+  try {
+    const models = await listProviderModels(provider)
+    response.set('Cache-Control', 'no-store').json({ models })
+  } catch (error) {
+    if (error instanceof ProviderModelsError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    throw error
+  }
 })
 
 app.post('/api/boardrooms/run', async (request, response) => {

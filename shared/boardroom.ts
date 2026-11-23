@@ -63,3 +63,8 @@ export interface ProviderAvailability {
   anthropic: boolean
   openrouter: boolean
 }
+
+export interface ProviderModel {
+  id: string
+  name: string
+}
