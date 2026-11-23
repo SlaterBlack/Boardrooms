@@ -10,7 +10,14 @@ interface AgentEditorModalProps {
 }
 
 function defaultModel(provider: Provider): string {
-  return provider === 'openai' ? 'gpt-6.2-sol' : 'claude-sonnet-5-5'
+  switch (provider) {
+    case 'openai':
+      return 'gpt-6.2-sol'
+    case 'anthropic':
+      return 'claude-sonnet-5-5'
+    case 'openrouter':
+      return 'openai/gpt-4o-mini'
+  }
 }
 
 function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModalProps) {
@@ -74,13 +81,18 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
             <select
               onChange={(event) => {
                 const provider: Provider =
-                  event.target.value === 'anthropic' ? 'anthropic' : 'openai'
+                  event.target.value === 'anthropic'
+                    ? 'anthropic'
+                    : event.target.value === 'openrouter'
+                      ? 'openrouter'
+                      : 'openai'
                 update({ provider, model: defaultModel(provider) })
               }}
               value={draft.provider}
             >
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </label>
           <label className="modal-field">
@@ -88,7 +100,7 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
             <input
               maxLength={120}
               onChange={(event) => update({ model: event.target.value })}
-              placeholder="Provider model ID"
+              placeholder={draft.provider === 'openrouter' ? 'e.g. openai/gpt-4o-mini' : 'Provider model ID'}
               required
               value={draft.model}
             />

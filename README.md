@@ -1,6 +1,6 @@
-# BoardMeetings
+# Boardrooms
 
-BoardMeetings is an AI meeting hub. Configure advisors with different roles,
+Boardrooms is an AI meeting hub. Configure advisors with different roles,
 providers, models, and instructions; bring one or more into a boardroom; and
 give them a task to discuss. The facilitator then synthesizes their discussion
 into a decision-ready conclusion.
@@ -20,11 +20,11 @@ test -f .env || cp .env.example .env
 chmod 600 .env
 ```
 
-Set `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or both in `.env`, and set
-`BOARDMEETINGS_PASSWORD` to a unique password of at least 16 characters for
-network sign-in. Provider keys stay on the server and are never sent to the
-browser. Do not commit `.env`. If `.env` already exists, edit it rather than
-replacing it.
+Set any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` in
+`.env`, and set `BOARDROOMS_PASSWORD` to a unique password of at least 16
+characters for network sign-in. Provider keys stay on the server and are never
+sent to the browser. Do not commit `.env`. If `.env` already exists, edit it
+rather than replacing it.
 
 ## Run locally
 
@@ -43,6 +43,9 @@ are made server-side.
   five named agents from the roster.
 - Use the **Agents** tab to add, edit, or delete agent profiles. Configure each
   agent's provider, model ID, perspective, knowledge, skills, and instructions.
+- OpenRouter agents use the OpenAI-compatible API. Enter the provider-prefixed
+  model slug from your OpenRouter model catalog (for example,
+  `openai/gpt-4o-mini`).
 - Choose one to three discussion rounds and a facilitator.
 - Each advisor speaks in turn and can respond to the earlier discussion. The
   facilitator makes a final synthesis.
@@ -62,23 +65,23 @@ npm start
 
 The production server serves both the app and API on port `3001` by default.
 Set `PORT` to change it. The systemd unit binds to `0.0.0.0` and requires
-`BOARDMEETINGS_PASSWORD`; sign-in uses a signed, HTTP-only cookie and throttles
+`BOARDROOMS_PASSWORD`; sign-in uses a signed, HTTP-only cookie and throttles
 repeated failed attempts. Use this direct HTTP setup only on a trusted LAN. For
 untrusted networks, put it behind an HTTPS reverse proxy.
 
 On this host, install and start the systemd unit:
 
 ```sh
-sudo install -D -m 0644 deploy/boardmeetings.service /etc/systemd/system/boardmeetings.service
+sudo install -D -m 0644 deploy/boardrooms.service /etc/systemd/system/boardrooms.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now boardmeetings
+sudo systemctl enable --now boardrooms
 ```
 
-Check it with `systemctl status boardmeetings` and
+Check it with `systemctl status boardrooms` and
 `curl http://localhost:3001/api/health`. On the LAN, open
-`http://<server-lan-ip>:3001` and sign in with `BOARDMEETINGS_PASSWORD`. After
+`http://<server-lan-ip>:3001` and sign in with `BOARDROOMS_PASSWORD`. After
 updating code or `.env`, rebuild with `npm run build` and restart with
-`sudo systemctl restart boardmeetings`.
+`sudo systemctl restart boardrooms`.
 
 ## API
 

@@ -64,12 +64,15 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
     seenIds.add(id)
 
     const provider = value.provider
-    if (provider !== 'openai' && provider !== 'anthropic') {
+    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'openrouter') {
       throw new BoardroomInputError(`Agent ${index + 1} has an unsupported provider.`)
     }
 
     const model = readText(value.model, `Agent ${index + 1} model`, 120)
-    if (!/^[a-zA-Z0-9._:-]+$/.test(model)) {
+    const validModel = provider === 'openrouter'
+      ? /^[a-zA-Z0-9._:/-]+$/.test(model)
+      : /^[a-zA-Z0-9._:-]+$/.test(model)
+    if (!validModel) {
       throw new BoardroomInputError(`Agent ${index + 1} has an invalid model ID.`)
     }
 
@@ -172,6 +175,17 @@ function anthropicClient(): Anthropic {
   return new Anthropic({ apiKey, maxRetries: 1, timeout: 90_000 })
 }
 
+function openRouterClient(): OpenAI {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY is not configured.')
+  return new OpenAI({
+    apiKey,
+    baseURL: 'https://openrouter.ai/api/v1',
+    maxRetries: 1,
+    timeout: 90_000,
+  })
+}
+
 async function complete(
   agent: AgentConfig,
   system: string,
@@ -190,6 +204,19 @@ async function complete(
       { signal },
     )
     content = response.output_text
+  } else if (agent.provider === 'openrouter') {
+    const response = await openRouterClient().chat.completions.create(
+      {
+        model: agent.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 700,
+      },
+      { signal },
+    )
+    content = response.choices[0]?.message.content ?? ''
   } else {
     const response = await anthropicClient().messages.create(
       {
@@ -212,7 +239,14 @@ async function complete(
 }
 
 function providerLabel(provider: Provider): string {
-  return provider === 'openai' ? 'OpenAI' : 'Anthropic'
+  switch (provider) {
+    case 'openai':
+      return 'OpenAI'
+    case 'anthropic':
+      return 'Anthropic'
+    case 'openrouter':
+      return 'OpenRouter'
+  }
 }
 
 function providerErrorMessage(provider: Provider, error: unknown): string {

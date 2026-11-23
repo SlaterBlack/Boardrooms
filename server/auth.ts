@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 
-const COOKIE_NAME = 'boardmeetings_session'
+const COOKIE_NAME = 'boardrooms_session'
 const SESSION_SECONDS = 7 * 24 * 60 * 60
 
 function signature(password: string, expiresAt: number): string {

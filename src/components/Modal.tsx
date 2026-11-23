@@ -31,7 +31,7 @@ function Modal({ title, onClose, children }: ModalProps) {
       >
         <header className="modal-header">
           <div>
-            <p className="section-kicker">BOARDMEETINGS</p>
+            <p className="section-kicker">BOARDROOMS</p>
             <h2 id="modal-title">{title}</h2>
           </div>
           <button

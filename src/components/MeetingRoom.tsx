@@ -27,6 +27,17 @@ function statusLabel(status: MeetingStatus): string {
   }
 }
 
+function providerLabel(provider: Meeting['agents'][number]['provider']): string {
+  switch (provider) {
+    case 'openai':
+      return 'OpenAI'
+    case 'anthropic':
+      return 'Anthropic'
+    case 'openrouter':
+      return 'OpenRouter'
+  }
+}
+
 function MeetingRoom({ meeting, providers, onBack, onUpdate }: MeetingRoomProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
@@ -186,9 +197,8 @@ function MeetingRoom({ meeting, providers, onBack, onUpdate }: MeetingRoomProps)
           <div className="notice setup-notice">
             <strong>Provider access is needed to start this discussion.</strong>
             <span>
-              Configure {missingProviders
-                .map((provider) => provider === 'openai' ? 'OpenAI' : 'Anthropic')
-                .join(' and ')} on the server, or edit the meeting’s agent selection.
+              Configure {missingProviders.map(providerLabel).join(' and ')} on the server,
+              or edit the meeting’s agent selection.
             </span>
           </div>
         )}

@@ -1,4 +1,4 @@
-export type Provider = 'openai' | 'anthropic'
+export type Provider = 'openai' | 'anthropic' | 'openrouter'
 
 export interface AgentConfig {
   id: string
@@ -61,4 +61,5 @@ export type BoardroomEvent =
 export interface ProviderAvailability {
   openai: boolean
   anthropic: boolean
+  openrouter: boolean
 }

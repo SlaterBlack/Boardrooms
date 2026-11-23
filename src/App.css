@@ -572,6 +572,11 @@
   color: #8c6746;
 }
 
+.provider-openrouter {
+  background: #eef0f7;
+  color: #5d6589;
+}
+
 .agent-model-line code {
   overflow: hidden;
   color: #7b857d;

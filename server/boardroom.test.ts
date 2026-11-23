@@ -21,6 +21,16 @@ test('parses a boardroom request and supplies the default facilitator and rounds
   assert.equal(input.agents[0].provider, 'openai')
 })
 
+test('accepts OpenRouter provider-prefixed model IDs', () => {
+  const input = parseBoardroomInput({
+    task: 'Review the launch plan',
+    agents: [{ ...agent, provider: 'openrouter', model: 'openai/gpt-4o-mini' }],
+  })
+
+  assert.equal(input.agents[0].provider, 'openrouter')
+  assert.equal(input.agents[0].model, 'openai/gpt-4o-mini')
+})
+
 test('rejects empty tasks and empty agent lists', () => {
   assert.throws(
     () => parseBoardroomInput({ task: ' ', agents: [agent] }),
@@ -46,6 +56,14 @@ test('rejects invalid provider, model, and facilitator values', () => {
       parseBoardroomInput({
         task: 'Review the launch plan',
         agents: [{ ...agent, model: 'model name with spaces' }],
+      }),
+    /invalid model ID/,
+  )
+  assert.throws(
+    () =>
+      parseBoardroomInput({
+        task: 'Review the launch plan',
+        agents: [{ ...agent, provider: 'openrouter', model: 'model name with spaces' }],
       }),
     /invalid model ID/,
   )

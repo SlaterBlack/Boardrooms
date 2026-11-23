@@ -16,6 +16,17 @@ interface MeetingEditorModalProps {
   onCreate: (details: NewMeetingDetails) => void
 }
 
+function providerLabel(provider: AgentConfig['provider']): string {
+  switch (provider) {
+    case 'openai':
+      return 'OpenAI'
+    case 'anthropic':
+      return 'Anthropic'
+    case 'openrouter':
+      return 'OpenRouter'
+  }
+}
+
 function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalProps) {
   const [name, setName] = useState('')
   const [task, setTask] = useState('')
@@ -106,7 +117,7 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
                   </span>
                   <span className="participant-description">
                     <strong>{agent.name || 'Unnamed agent'}</strong>
-                    <span>{agent.role} · {agent.provider === 'openai' ? 'OpenAI' : 'Anthropic'}</span>
+                    <span>{agent.role} · {providerLabel(agent.provider)}</span>
                   </span>
                 </label>
               ))}

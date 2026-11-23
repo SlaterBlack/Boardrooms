@@ -13,8 +13,10 @@ import MeetingEditorModal, {
 import MeetingRoom from './components/MeetingRoom'
 import './App.css'
 
-const AGENT_STORAGE_KEY = 'boardmeetings.agents'
-const MEETING_STORAGE_KEY = 'boardmeetings.meetings'
+const AGENT_STORAGE_KEY = 'boardrooms.agents'
+const MEETING_STORAGE_KEY = 'boardrooms.meetings'
+const LEGACY_AGENT_STORAGE_KEY = 'boardmeetings.agents'
+const LEGACY_MEETING_STORAGE_KEY = 'boardmeetings.meetings'
 
 const DEFAULT_AGENTS: AgentConfig[] = [
   {
@@ -53,13 +55,20 @@ function normalizeAgent(value: unknown): AgentConfig | null {
     typeof value.id !== 'string' ||
     typeof value.name !== 'string' ||
     typeof value.role !== 'string' ||
-    (value.provider !== 'openai' && value.provider !== 'anthropic') ||
+    (value.provider !== 'openai' &&
+      value.provider !== 'anthropic' &&
+      value.provider !== 'openrouter') ||
     typeof value.model !== 'string'
   ) {
     return null
   }
 
-  const provider: Provider = value.provider === 'anthropic' ? 'anthropic' : 'openai'
+  const provider: Provider =
+    value.provider === 'anthropic'
+      ? 'anthropic'
+      : value.provider === 'openrouter'
+        ? 'openrouter'
+        : 'openai'
   return {
     id: value.id,
     name: value.name,
@@ -125,7 +134,11 @@ function normalizeMeeting(value: unknown): Meeting | null {
 
 function loadAgents(): AgentConfig[] {
   try {
-    const stored: unknown = JSON.parse(localStorage.getItem(AGENT_STORAGE_KEY) ?? 'null')
+    const stored: unknown = JSON.parse(
+      localStorage.getItem(AGENT_STORAGE_KEY) ??
+        localStorage.getItem(LEGACY_AGENT_STORAGE_KEY) ??
+        'null',
+    )
     if (Array.isArray(stored)) {
       const agents = stored.map(normalizeAgent)
       if (agents.every((agent) => agent !== null)) {
@@ -140,7 +153,11 @@ function loadAgents(): AgentConfig[] {
 
 function loadMeetings(): Meeting[] {
   try {
-    const stored: unknown = JSON.parse(localStorage.getItem(MEETING_STORAGE_KEY) ?? 'null')
+    const stored: unknown = JSON.parse(
+      localStorage.getItem(MEETING_STORAGE_KEY) ??
+        localStorage.getItem(LEGACY_MEETING_STORAGE_KEY) ??
+        'null',
+    )
     if (Array.isArray(stored)) {
       return stored
         .map(normalizeMeeting)
@@ -161,11 +178,27 @@ async function readProviderAvailability(signal?: AbortSignal): Promise<ProviderA
     !isRecord(result) ||
     !isRecord(result.providers) ||
     typeof result.providers.openai !== 'boolean' ||
-    typeof result.providers.anthropic !== 'boolean'
+    typeof result.providers.anthropic !== 'boolean' ||
+    typeof result.providers.openrouter !== 'boolean'
   ) {
     throw new Error('Provider status response was invalid.')
   }
-  return { openai: result.providers.openai, anthropic: result.providers.anthropic }
+  return {
+    openai: result.providers.openai,
+    anthropic: result.providers.anthropic,
+    openrouter: result.providers.openrouter,
+  }
+}
+
+function providerLabel(provider: Provider): string {
+  switch (provider) {
+    case 'openai':
+      return 'OpenAI'
+    case 'anthropic':
+      return 'Anthropic'
+    case 'openrouter':
+      return 'OpenRouter'
+  }
 }
 
 function meetingStatusLabel(status: MeetingStatus): string {
@@ -355,9 +388,9 @@ function App() {
   if (authState !== 'authenticated') {
     return (
       <main className="auth-shell">
-        <a className="brand" href="/" aria-label="BoardMeetings home">
+        <a className="brand" href="/" aria-label="Boardrooms home">
           <span className="brand-mark" aria-hidden="true">B</span>
-          <span>boardmeetings</span>
+          <span>boardrooms</span>
         </a>
         <section className="auth-card">
           <p className="eyebrow">PRIVATE BOARDROOM</p>
@@ -369,13 +402,13 @@ function App() {
           {authState === 'checking' && <p className="auth-copy">Checking your access…</p>}
           {authState === 'unavailable' && (
             <p className="auth-copy" role="alert">
-              {connectionError || 'The BoardMeetings server could not be reached.'}
+              {connectionError || 'The Boardrooms server could not be reached.'}
             </p>
           )}
           {authState === 'unauthenticated' && (
             <>
               <p className="auth-copy">
-                Enter the shared access password configured by the BoardMeetings host.
+                Enter the shared access password configured by the Boardrooms host.
               </p>
               <form className="login-form" onSubmit={signIn}>
                 <label htmlFor="access-password">Access password</label>
@@ -403,9 +436,9 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="BoardMeetings home">
+        <a className="brand" href="/" aria-label="Boardrooms home">
           <span className="brand-mark" aria-hidden="true">B</span>
-          <span>boardmeetings</span>
+          <span>boardrooms</span>
         </a>
         <div className="topbar-actions">
           <div className={`service-status ${providerState}`}>
@@ -446,7 +479,7 @@ function App() {
         {storageError && <p className="storage-notice" role="alert">{storageError}</p>}
         {connectionError && (
           <div className="notice error-notice" role="alert">
-            <strong>Couldn’t connect to the BoardMeetings server.</strong>
+            <strong>Couldn’t connect to the Boardrooms server.</strong>
             <span>{connectionError}</span>
           </div>
         )}
@@ -470,12 +503,17 @@ function App() {
               </button>
             </div>
 
-            {providerState === 'connected' && providers && !providers.openai && !providers.anthropic && (
+            {providerState === 'connected' &&
+              providers &&
+              !providers.openai &&
+              !providers.anthropic &&
+              !providers.openrouter && (
               <div className="notice setup-notice">
                 <strong>Connect an AI provider to start a discussion.</strong>
                 <span>
-                  Add <code>OPENAI_API_KEY</code> and/or <code>ANTHROPIC_API_KEY</code> to the
-                  server’s <code>.env</code> file, then restart BoardMeetings.
+                  Add an <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, or
+                  <code> OPENROUTER_API_KEY</code> to the server’s <code>.env</code> file,
+                  then restart Boardrooms.
                 </span>
               </div>
             )}
@@ -677,7 +715,7 @@ function AgentCard({ agent, index, onEdit, onDelete }: AgentCardProps) {
       </div>
       <div className="agent-model-line">
         <span className={`provider-badge provider-${agent.provider}`}>
-          {agent.provider === 'openai' ? 'OpenAI' : 'Anthropic'}
+        {providerLabel(agent.provider)}
         </span>
         <code>{agent.model}</code>
       </div>

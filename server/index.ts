@@ -2,7 +2,11 @@ import 'dotenv/config'
 import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { BoardroomEvent, ProviderAvailability } from '../shared/boardroom.ts'
+import type {
+  BoardroomEvent,
+  Provider,
+  ProviderAvailability,
+} from '../shared/boardroom.ts'
 import {
   clearSessionCookie,
   createSessionCookie,
@@ -14,7 +18,7 @@ import { BoardroomInputError, parseBoardroomInput, runBoardroom } from './boardr
 const app = express()
 const port = Number(process.env.PORT ?? 3001)
 const host = process.env.HOST ?? '127.0.0.1'
-const accessPassword = process.env.BOARDMEETINGS_PASSWORD?.trim() ?? ''
+const accessPassword = process.env.BOARDROOMS_PASSWORD?.trim() ?? ''
 const secureCookies = process.env.COOKIE_SECURE === 'true'
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url))
 const clientBuildDirectory = path.resolve(currentDirectory, '../dist')
@@ -24,15 +28,26 @@ function isLoopbackHost(value: string): boolean {
 }
 
 if (!isLoopbackHost(host) && accessPassword.length < 16) {
-  throw new Error('BOARDMEETINGS_PASSWORD must contain at least 16 characters for network access.')
+  throw new Error('BOARDROOMS_PASSWORD must contain at least 16 characters for network access.')
 }
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 
+function providerKeyName(provider: Provider): string {
+  switch (provider) {
+    case 'openai':
+      return 'OPENAI_API_KEY'
+    case 'anthropic':
+      return 'ANTHROPIC_API_KEY'
+    case 'openrouter':
+      return 'OPENROUTER_API_KEY'
+  }
+}
+
 app.use(express.json({ limit: '64kb' }))
 
 app.get('/api/health', (_request, response) => {
-  response.json({ status: 'ok', service: 'boardmeetings-api' })
+  response.json({ status: 'ok', service: 'boardrooms-api' })
 })
 
 app.get('/api/auth/session', (request, response) => {
@@ -112,6 +127,7 @@ app.get('/api/providers', (_request, response) => {
   const availability: ProviderAvailability = {
     openai: Boolean(process.env.OPENAI_API_KEY?.trim()),
     anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
+    openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
   }
   response.json({ providers: availability })
 })
@@ -131,20 +147,12 @@ app.post('/api/boardrooms/run', async (request, response) => {
   const missingProviders = [
     ...new Set(
       input.agents
-        .filter((agent) =>
-          agent.provider === 'openai'
-            ? !process.env.OPENAI_API_KEY?.trim()
-            : !process.env.ANTHROPIC_API_KEY?.trim(),
-        )
+        .filter((agent) => !process.env[providerKeyName(agent.provider)]?.trim())
         .map((agent) => agent.provider),
     ),
   ]
   if (missingProviders.length > 0) {
-    const instructions = missingProviders
-      .map((provider) =>
-        provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY',
-      )
-      .join(' and ')
+    const instructions = missingProviders.map(providerKeyName).join(' and ')
     response.status(503).json({
       error: `Configure ${instructions} in the server environment, then restart the service.`,
     })
@@ -188,5 +196,5 @@ app.get('/{*path}', (_request, response, next) => {
 })
 
 app.listen(port, host, () => {
-  console.log(`BoardMeetings server listening on http://${host}:${port}`)
+  console.log(`Boardrooms server listening on http://${host}:${port}`)
 })
