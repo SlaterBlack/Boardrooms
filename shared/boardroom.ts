@@ -1,0 +1,45 @@
+export type Provider = 'openai' | 'anthropic'
+
+export interface AgentConfig {
+  id: string
+  name: string
+  role: string
+  provider: Provider
+  model: string
+  instructions: string
+}
+
+export interface BoardroomTurn {
+  id: string
+  agentId: string
+  agentName: string
+  agentRole: string
+  round: number
+  content: string
+}
+
+export interface BoardroomRunInput {
+  task: string
+  agents: AgentConfig[]
+  rounds: number
+  facilitatorId: string
+}
+
+export type BoardroomEvent =
+  | { type: 'round_start'; round: number; totalRounds: number }
+  | { type: 'turn_start'; agentId: string; agentName: string; round: number }
+  | { type: 'turn_complete'; turn: BoardroomTurn }
+  | { type: 'synthesis_start'; agentId: string; agentName: string }
+  | {
+      type: 'synthesis_complete'
+      agentId: string
+      agentName: string
+      content: string
+    }
+  | { type: 'error'; message: string }
+  | { type: 'done' }
+
+export interface ProviderAvailability {
+  openai: boolean
+  anthropic: boolean
+}

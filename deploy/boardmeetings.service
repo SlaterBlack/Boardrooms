@@ -1,0 +1,23 @@
+[Unit]
+Description=BoardMeetings web application
+After=network.target
+
+[Service]
+Type=simple
+User=ai3d
+Group=www-data
+WorkingDirectory=/var/www/BoardMeetings
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=HOST=0.0.0.0
+EnvironmentFile=-/var/www/BoardMeetings/.env
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
