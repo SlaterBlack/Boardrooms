@@ -79,6 +79,13 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
       role: readText(value.role, `Agent ${index + 1} role`, 120),
       provider,
       model,
+      knowledge: readText(
+        value.knowledge,
+        `Agent ${index + 1} knowledge`,
+        1_200,
+        false,
+      ),
+      skills: readText(value.skills, `Agent ${index + 1} skills`, 1_200, false),
       instructions: readText(
         value.instructions,
         `Agent ${index + 1} instructions`,
@@ -142,11 +149,15 @@ Be specific and concise. Keep your contribution under 200 words.`
 }
 
 function buildSystemPrompt(agent: AgentConfig): string {
+  const knowledge = agent.knowledge
+    ? `\nRelevant knowledge and background:\n${agent.knowledge}`
+    : ''
+  const skills = agent.skills ? `\nSkills and methods:\n${agent.skills}` : ''
   const extraInstructions = agent.instructions
     ? `\nAdditional guidance from the user:\n${agent.instructions}`
     : ''
 
-  return `You are ${agent.name}, serving as ${agent.role} in a collaborative boardroom. Bring the knowledge and perspective of this role, distinguish facts from assumptions, and be constructive with the other advisors.${extraInstructions}`
+  return `You are ${agent.name}, serving as ${agent.role} in a collaborative boardroom. Bring the knowledge and perspective of this role, distinguish facts from assumptions, and be constructive with the other advisors.${knowledge}${skills}${extraInstructions}`
 }
 
 function openAIClient(): OpenAI {

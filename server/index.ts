@@ -29,7 +29,7 @@ if (!isLoopbackHost(host) && accessPassword.length < 16) {
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 
-app.use(express.json({ limit: '32kb' }))
+app.use(express.json({ limit: '64kb' }))
 
 app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok', service: 'boardmeetings-api' })

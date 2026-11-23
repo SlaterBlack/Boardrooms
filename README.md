@@ -39,18 +39,19 @@ are made server-side.
 
 ## How a boardroom works
 
-- Add up to five advisors and select which ones join a session.
-- Configure each advisor's provider, model ID, perspective, and optional
-  instructions.
+- Use the **Meetings** tab to create meetings, add an agenda, and choose one to
+  five named agents from the roster.
+- Use the **Agents** tab to add, edit, or delete agent profiles. Configure each
+  agent's provider, model ID, perspective, knowledge, skills, and instructions.
 - Choose one to three discussion rounds and a facilitator.
 - Each advisor speaks in turn and can respond to the earlier discussion. The
   facilitator makes a final synthesis.
 - A run makes one provider request per advisor per round, plus one synthesis
   request. Provider usage may incur charges.
 
-Advisor settings are saved in the current browser's local storage. Discussion
-transcripts are held in the page for the current session and are not persisted
-by the server.
+Agent profiles, meeting details, and transcripts are saved in that browser's
+local storage; the server does not persist them or synchronize them across
+devices. Meetings keep a snapshot of the agents selected when they are created.
 
 ## Production and system service
 

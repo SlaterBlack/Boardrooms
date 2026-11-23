@@ -1,0 +1,127 @@
+import type {
+  BoardroomEvent,
+  BoardroomRunInput,
+  BoardroomTurn,
+} from '../shared/boardroom'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function readEvent(value: unknown): BoardroomEvent {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    throw new Error('Received an invalid event from the boardroom.')
+  }
+
+  if (
+    value.type === 'round_start' &&
+    typeof value.round === 'number' &&
+    typeof value.totalRounds === 'number'
+  ) {
+    return { type: value.type, round: value.round, totalRounds: value.totalRounds }
+  }
+  if (
+    value.type === 'turn_start' &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string' &&
+    typeof value.round === 'number'
+  ) {
+    return {
+      type: value.type,
+      agentId: value.agentId,
+      agentName: value.agentName,
+      round: value.round,
+    }
+  }
+  if (value.type === 'turn_complete' && isRecord(value.turn)) {
+    const turn = value.turn
+    if (
+      typeof turn.id === 'string' &&
+      typeof turn.agentId === 'string' &&
+      typeof turn.agentName === 'string' &&
+      typeof turn.agentRole === 'string' &&
+      typeof turn.round === 'number' &&
+      typeof turn.content === 'string'
+    ) {
+      const parsedTurn: BoardroomTurn = {
+        id: turn.id,
+        agentId: turn.agentId,
+        agentName: turn.agentName,
+        agentRole: turn.agentRole,
+        round: turn.round,
+        content: turn.content,
+      }
+      return { type: value.type, turn: parsedTurn }
+    }
+  }
+  if (
+    value.type === 'synthesis_start' &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string'
+  ) {
+    return {
+      type: value.type,
+      agentId: value.agentId,
+      agentName: value.agentName,
+    }
+  }
+  if (
+    value.type === 'synthesis_complete' &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string' &&
+    typeof value.content === 'string'
+  ) {
+    return {
+      type: value.type,
+      agentId: value.agentId,
+      agentName: value.agentName,
+      content: value.content,
+    }
+  }
+  if (value.type === 'error' && typeof value.message === 'string') {
+    return { type: value.type, message: value.message }
+  }
+  if (value.type === 'done') return { type: value.type }
+
+  throw new Error('Received an invalid event from the boardroom.')
+}
+
+async function responseError(response: Response): Promise<string> {
+  const result: unknown = await response.json().catch(() => null)
+  if (isRecord(result) && typeof result.error === 'string') return result.error
+  return `The boardroom request failed (${response.status}).`
+}
+
+export async function streamBoardroom(
+  input: BoardroomRunInput,
+  signal: AbortSignal,
+  onEvent: (event: BoardroomEvent) => void,
+): Promise<void> {
+  const response = await fetch('/api/boardrooms/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+    signal,
+  })
+
+  if (!response.ok) throw new Error(await responseError(response))
+  if (!response.body) throw new Error('The boardroom stream is unavailable.')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  function processLine(line: string) {
+    if (line.trim()) onEvent(readEvent(JSON.parse(line) as unknown))
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    lines.forEach(processLine)
+    if (done) break
+  }
+  processLine(buffer)
+}

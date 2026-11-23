@@ -6,8 +6,12 @@ export interface AgentConfig {
   role: string
   provider: Provider
   model: string
+  knowledge: string
+  skills: string
   instructions: string
 }
+
+export type MeetingStatus = 'ready' | 'running' | 'completed' | 'interrupted'
 
 export interface BoardroomTurn {
   id: string
@@ -16,6 +20,21 @@ export interface BoardroomTurn {
   agentRole: string
   round: number
   content: string
+}
+
+export interface Meeting {
+  id: string
+  name: string
+  task: string
+  agents: AgentConfig[]
+  facilitatorId: string
+  rounds: number
+  createdAt: string
+  updatedAt: string
+  status: MeetingStatus
+  transcript: BoardroomTurn[]
+  synthesis: string
+  error: string
 }
 
 export interface BoardroomRunInput {

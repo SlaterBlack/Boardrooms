@@ -8,6 +8,8 @@ const agent = {
   role: 'Market analyst',
   provider: 'openai',
   model: 'gpt-6.2-sol',
+  knowledge: '',
+  skills: '',
   instructions: '',
 }
 
