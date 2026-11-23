@@ -1,0 +1,260 @@
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  max-width: 1184px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 0 64px;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  min-height: 88px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e6e8e1;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  color: #23332d;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.3px;
+  text-decoration: none;
+}
+
+.brand-mark {
+  width: 31px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: #d7e5d7;
+  color: #315b43;
+  font-family: Georgia, serif;
+  font-size: 19px;
+}
+
+.workspace-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #69766d;
+  font-size: 12px;
+}
+
+.workspace-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8eaa91;
+}
+
+.welcome {
+  padding: 72px 0 44px;
+}
+
+.eyebrow,
+.card-kicker {
+  color: #758579;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+}
+
+.eyebrow {
+  margin: 0 0 17px;
+}
+
+.welcome h1 {
+  max-width: 650px;
+  margin: 0;
+  color: #26352e;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(38px, 5vw, 58px);
+  font-weight: 400;
+  letter-spacing: -2px;
+  line-height: 1.08;
+}
+
+.intro {
+  max-width: 490px;
+  margin: 19px 0 0;
+  color: #758078;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.overview-card {
+  min-height: 255px;
+  padding: 25px 26px 19px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e6e8e1;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.meetings-card {
+  background: #fbfcf9;
+}
+
+.decisions-card {
+  background: #fafaf7;
+}
+
+.card-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #e8eee6;
+  color: #476d52;
+}
+
+.notes-icon {
+  background: #f0ede3;
+  color: #837749;
+}
+
+.card-icon svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.card-kicker {
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.overview-card h2 {
+  margin: 22px 0 8px;
+  color: #2c3932;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 23px;
+  font-weight: 400;
+  letter-spacing: -0.4px;
+}
+
+.overview-card p {
+  max-width: 390px;
+  margin: 0;
+  color: #788179;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.card-footer {
+  margin-top: auto;
+  padding-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #54705a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.arrow {
+  font-size: 16px;
+}
+
+.status-bar {
+  min-height: 76px;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #68756c;
+  font-size: 11px;
+}
+
+.status-indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #d5a35b;
+}
+
+.status-indicator.connected {
+  background: #57936a;
+}
+
+.status-indicator.disconnected {
+  background: #c36e63;
+}
+
+.status-divider {
+  height: 14px;
+  margin: 0 4px;
+  border-left: 1px solid #dfe2da;
+}
+
+.status-note {
+  color: #9aa198;
+}
+
+@media (max-width: 700px) {
+  .app-shell {
+    padding: 0 23px;
+  }
+
+  .topbar {
+    min-height: 72px;
+  }
+
+  .workspace-label {
+    font-size: 11px;
+  }
+
+  .welcome {
+    padding: 58px 0 32px;
+  }
+
+  .welcome h1 {
+    letter-spacing: -1.3px;
+  }
+
+  .overview {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-card {
+    min-height: 220px;
+  }
+
+  .status-bar {
+    min-height: 68px;
+    flex-wrap: wrap;
+    align-content: center;
+  }
+
+  .status-note {
+    display: none;
+  }
+}
