@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { AgentConfig } from '../shared/boardroom.ts'
 import {
   BoardroomInputError,
   parseBoardroomInput,
+  parseDirectorSelection,
+  parseOrchestratorSelection,
   parseBoardroomReportInput,
 } from './boardroom.ts'
 
-const agent = {
+const agent: AgentConfig = {
   id: 'strategy',
   name: 'Strategy',
   role: 'Market analyst',
+  defaultChatRole: 'advisor',
   provider: 'openai',
   model: 'gpt-6.2-sol',
   knowledge: '',
@@ -18,8 +22,13 @@ const agent = {
 }
 
 test('parses a boardroom request and supplies the default facilitator and rounds', () => {
-  const input = parseBoardroomInput({ task: 'Review the launch plan', agents: [agent] })
+  const input = parseBoardroomInput({
+    meetingId: 'meeting-123',
+    task: 'Review the launch plan',
+    agents: [agent],
+  })
 
+  assert.equal(input.meetingId, 'meeting-123')
   assert.equal(input.rounds, 2)
   assert.equal(input.facilitatorId, 'strategy')
   assert.equal(input.agents[0].provider, 'openai')
@@ -36,6 +45,7 @@ test('accepts bounded prior conversation context for chat turns', () => {
 
   assert.equal(input.context, context)
   assert.equal(input.rounds, 1)
+  assert.equal(input.synthesize, true)
   assert.throws(
     () =>
       parseBoardroomInput({
@@ -44,6 +54,114 @@ test('accepts bounded prior conversation context for chat turns', () => {
         agents: [agent],
       }),
     /Conversation context/,
+  )
+})
+
+test('allows informational chat requests to skip facilitator synthesis', () => {
+  const input = parseBoardroomInput({
+    task: 'Assess the low-carbon options',
+    rounds: 1,
+    synthesize: false,
+    agents: [agent],
+  })
+
+  assert.equal(input.synthesize, false)
+  assert.throws(
+    () =>
+      parseBoardroomInput({
+        task: 'Assess the low-carbon options',
+        synthesize: 'false',
+        agents: [agent],
+      }),
+    /Synthesize must be a boolean/,
+  )
+})
+
+test('accepts a director and validates one routed advisor role', () => {
+  const director = { ...agent, id: 'director', name: 'Director' }
+  const input = parseBoardroomInput({
+    task: 'Review the facade options',
+    agents: [director, agent],
+    agentRoles: {
+      director: 'director',
+      strategy: 'advisor',
+    },
+    facilitatorId: agent.id,
+  })
+  assert.equal(input.agentRoles?.director, 'director')
+  assert.equal(input.agentRoles?.strategy, 'advisor')
+  assert.equal(parseDirectorSelection(agent.id, [agent]), agent)
+  assert.equal(parseDirectorSelection(`${agent.id} sounds best`, [agent]), null)
+  assert.throws(
+    () =>
+      parseBoardroomInput({
+        task: 'Review the facade options',
+        agents: [director, agent],
+        agentRoles: {
+          director: 'director',
+          strategy: 'director',
+        },
+        facilitatorId: agent.id,
+      }),
+    /at least one Meeting Member/,
+  )
+})
+
+test('parses an Orchestrator sequence of up to three eligible agents', () => {
+  const agents = [
+    agent,
+    { ...agent, id: 'researcher', name: 'Researcher' },
+    { ...agent, id: 'critic', name: 'Critic' },
+    { ...agent, id: 'other', name: 'Other' },
+  ]
+
+  assert.deepEqual(
+    parseOrchestratorSelection('["researcher","strategy","critic"]', agents),
+    [agents[1], agents[0], agents[2]],
+  )
+  assert.equal(parseOrchestratorSelection('["strategy","missing"]', agents), null)
+  assert.equal(parseOrchestratorSelection('["strategy","strategy"]', agents), null)
+  assert.equal(
+    parseOrchestratorSelection('["strategy","researcher","critic","other"]', agents),
+    null,
+  )
+})
+
+test('requires a capable Image Analyser for a valid bounded image attachment', () => {
+  const analyser: AgentConfig = {
+    ...agent,
+    id: 'analyser',
+    name: 'Image Analyser',
+    modelCapabilities: { supportsVision: true },
+  }
+  const input = parseBoardroomInput({
+    task: 'Review this facade.',
+    imageDataUrl: 'data:image/png;base64,dGVzdA==',
+    agents: [agent, analyser],
+    agentRoles: { strategy: 'advisor', analyser: 'image_analyser' },
+    facilitatorId: agent.id,
+  })
+
+  assert.equal(input.imageDataUrl, 'data:image/png;base64,dGVzdA==')
+  assert.throws(
+    () =>
+      parseBoardroomInput({
+        task: 'Review this facade.',
+        imageDataUrl: 'data:image/png;base64,dGVzdA==',
+        agents: [agent],
+      }),
+    /Add an Image Analyser/,
+  )
+  assert.throws(
+    () =>
+      parseBoardroomInput({
+        task: 'Review this facade.',
+        imageDataUrl: 'data:image/png;base64,dGVzdA===',
+        agents: [agent, analyser],
+        agentRoles: { strategy: 'advisor', analyser: 'image_analyser' },
+        facilitatorId: agent.id,
+      }),
+    /PNG, JPEG, or WebP/,
   )
 })
 
@@ -80,6 +198,24 @@ test('parses report jobs and validates document type, title, and context', () =>
       }),
     /Report title/,
   )
+})
+
+test('selects a chat-assigned report formatter for the final report pass', () => {
+  const formatter = { ...agent, id: 'formatter', name: 'Formatter' }
+  const input = parseBoardroomReportInput({
+    type: 'custom',
+    title: 'Client report',
+    context: 'The board agreed to preserve the existing courtyard.',
+    agents: [agent, formatter],
+    facilitatorId: agent.id,
+    agentRoles: {
+      strategy: 'advisor',
+      formatter: 'report_formatter',
+    },
+  })
+
+  assert.equal(input.formatterId, formatter.id)
+  assert.equal(input.agentRoles?.[formatter.id], 'report_formatter')
 })
 
 test('accepts OpenRouter provider-prefixed model IDs', () => {

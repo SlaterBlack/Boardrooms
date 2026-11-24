@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   BoardroomChatMessage,
   BoardroomReport,
+  ChatType,
   Meeting,
   MeetingMode,
   MeetingStatus,
@@ -15,6 +16,12 @@ import MeetingEditorModal, {
 } from './components/MeetingEditorModal'
 import MeetingRoom from './components/MeetingRoom'
 import { createId } from './createId'
+import {
+  isBoardroomImageSource,
+  normalizeChatAgentRoles,
+  normalizeDefaultChatRole,
+  normalizeModelCapabilities,
+} from '../shared/chat'
 import './App.css'
 
 const AGENT_STORAGE_KEY = 'boardrooms.agents'
@@ -28,6 +35,7 @@ const DEFAULT_AGENTS: AgentConfig[] = [
     id: 'strategy-advisor',
     name: 'Strategy advisor',
     role: 'Strategy & market perspective',
+    defaultChatRole: 'advisor',
     provider: 'openai',
     model: 'gpt-6.2-sol',
     knowledge: 'Market strategy, product positioning, and long-term planning.',
@@ -38,6 +46,7 @@ const DEFAULT_AGENTS: AgentConfig[] = [
     id: 'risk-advisor',
     name: 'Risk advisor',
     role: 'Risk & governance',
+    defaultChatRole: 'advisor',
     provider: 'anthropic',
     model: 'claude-sonnet-5-5',
     knowledge: 'Organizational risk, governance, and responsible decision-making.',
@@ -69,22 +78,30 @@ function normalizeAgent(value: unknown): AgentConfig | null {
     typeof value.role !== 'string' ||
     (value.provider !== 'openai' &&
       value.provider !== 'anthropic' &&
-      value.provider !== 'openrouter') ||
+      value.provider !== 'openrouter' &&
+      value.provider !== 'magnific') ||
     typeof value.model !== 'string'
   ) {
     return null
   }
 
+  const defaultChatRole = normalizeDefaultChatRole(value.defaultChatRole)
+  const modelCapabilities = normalizeModelCapabilities(value.modelCapabilities)
+  if (!defaultChatRole || !modelCapabilities) return null
   const provider: Provider =
     value.provider === 'anthropic'
       ? 'anthropic'
       : value.provider === 'openrouter'
         ? 'openrouter'
-        : 'openai'
+        : value.provider === 'magnific'
+          ? 'magnific'
+          : 'openai'
   return {
     id: value.id,
     name: value.name,
     role: value.role,
+    defaultChatRole,
+    modelCapabilities,
     provider,
     model: value.model,
     knowledge: typeof value.knowledge === 'string' ? value.knowledge : '',
@@ -126,6 +143,13 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
     : []
   const mode = value.mode === undefined ? 'discussion' : value.mode
   if (mode !== 'discussion' && mode !== 'chat') return null
+  const chatType =
+    value.chatType === undefined
+      ? mode === 'chat'
+        ? 'document'
+        : 'informational'
+      : value.chatType
+  if (chatType !== 'informational' && chatType !== 'document') return null
   const rawChatMessages =
     value.chatMessages === undefined ? [] : value.chatMessages
   if (!Array.isArray(rawChatMessages)) return null
@@ -141,6 +165,7 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
       (message.agentId === undefined || typeof message.agentId === 'string') &&
       (message.agentName === undefined || typeof message.agentName === 'string') &&
       (message.agentRole === undefined || typeof message.agentRole === 'string') &&
+      (message.imageUrl === undefined || isBoardroomImageSource(message.imageUrl)) &&
       (message.role === 'user' ||
         (typeof message.agentId === 'string' &&
           typeof message.agentName === 'string')),
@@ -158,6 +183,14 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
       typeof report.content === 'string' &&
       typeof report.createdAt === 'string',
   )
+  const meetingAgents = agents.filter(
+    (agent): agent is AgentConfig => agent !== null,
+  )
+  const agentRoles = normalizeChatAgentRoles(
+    meetingAgents.map((agent) => agent.id),
+    value.agentRoles,
+  )
+  if (!agentRoles) return null
   const wasRunning = interruptRunning && value.status === 'running'
 
   return {
@@ -165,7 +198,9 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
     name: value.name,
     task: value.task,
     mode: mode as MeetingMode,
-    agents: agents.filter((agent): agent is AgentConfig => agent !== null),
+    chatType: chatType as ChatType,
+    agents: meetingAgents,
+    agentRoles,
     facilitatorId: value.facilitatorId,
     rounds: value.rounds,
     createdAt: value.createdAt,
@@ -297,7 +332,8 @@ async function readProviderAvailability(signal?: AbortSignal): Promise<ProviderA
     !isRecord(result.providers) ||
     typeof result.providers.openai !== 'boolean' ||
     typeof result.providers.anthropic !== 'boolean' ||
-    typeof result.providers.openrouter !== 'boolean'
+    typeof result.providers.openrouter !== 'boolean' ||
+    typeof result.providers.magnific !== 'boolean'
   ) {
     throw new Error('Provider status response was invalid.')
   }
@@ -305,6 +341,7 @@ async function readProviderAvailability(signal?: AbortSignal): Promise<ProviderA
     openai: result.providers.openai,
     anthropic: result.providers.anthropic,
     openrouter: result.providers.openrouter,
+    magnific: result.providers.magnific,
   }
 }
 
@@ -316,6 +353,35 @@ function providerLabel(provider: Provider): string {
       return 'Anthropic'
     case 'openrouter':
       return 'OpenRouter'
+    case 'magnific':
+      return 'Magnific'
+  }
+}
+
+function chatRoleLabel(role: AgentConfig['defaultChatRole']): string {
+  switch (role) {
+    case 'advisor':
+      return 'Meeting Member'
+    case 'director':
+      return 'Orchestrator'
+    case 'researcher':
+      return 'Researcher'
+    case 'facilitator':
+      return 'Facilitator'
+    case 'critic':
+      return 'Critic'
+    case 'synthesizer':
+      return 'Synthesizer'
+    case 'image_processor':
+      return 'Image Processor'
+    case 'image_generator':
+      return 'Image Generator'
+    case 'image_analyser':
+      return 'Image Analyser'
+    case 'report_formatter':
+      return 'Document Formatter'
+    case 'executor':
+      return 'Executor'
   }
 }
 
@@ -363,6 +429,7 @@ function App() {
   const [showAgentModal, setShowAgentModal] = useState(false)
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null)
   const [showMeetingModal, setShowMeetingModal] = useState(false)
+  const [editingMeeting, setEditingMeeting] = useState<Meeting | null>(null)
 
   function applySharedState(state: SharedBoardroomState) {
     stateRevisionRef.current = state.revision
@@ -548,7 +615,7 @@ function App() {
 
   function deleteAgent(agentId: string) {
     const agent = agents.find((current) => current.id === agentId)
-    if (!agent || !window.confirm(`Delete ${agent.name}? Existing meetings keep their saved copy.`)) {
+    if (!agent || !window.confirm(`Delete ${agent.name}? Existing boardrooms keep their saved copy.`)) {
       return
     }
     persistAgents(agents.filter((current) => current.id !== agentId))
@@ -561,8 +628,10 @@ function App() {
     const meeting: Meeting = {
       id: createId(),
       ...details,
+      mode: 'chat',
       task: details.task.trim() || 'Ongoing boardroom chat',
       agents: details.agents.map((agent) => ({ ...agent })),
+      rounds: 1,
       createdAt: now,
       updatedAt: now,
       status: 'ready',
@@ -583,6 +652,23 @@ function App() {
         meeting.id === updatedMeeting.id ? updatedMeeting : meeting,
       ),
     )
+  }
+
+  function saveMeeting(details: NewMeetingDetails) {
+    if (!editingMeeting) {
+      createMeeting(details)
+      return
+    }
+
+    const currentMeeting =
+      meetingsRef.current.find((meeting) => meeting.id === editingMeeting.id) ??
+      editingMeeting
+    updateMeeting({
+      ...currentMeeting,
+      ...details,
+      updatedAt: new Date().toISOString(),
+    })
+    setEditingMeeting(null)
   }
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
@@ -719,7 +805,7 @@ function App() {
           role="tab"
           type="button"
         >
-          Meetings <span className="tab-count">{activeMeetings.length}</span>
+          Chats <span className="tab-count">{activeMeetings.length}</span>
         </button>
         <button
           aria-selected={activeTab === 'agents'}
@@ -746,9 +832,9 @@ function App() {
             <div className="page-heading">
               <div>
                 <p className="eyebrow">YOUR AI MEETING HUB</p>
-                <h1 id="meetings-title">Meetings</h1>
+                <h1 id="meetings-title">Chats</h1>
                 <p className="page-description">
-                  Create a structured discussion or an ongoing chat with your advisors.
+                  Create an ongoing chat with your advisors. Choose informational or report/document mode.
                 </p>
               </div>
               <button
@@ -766,7 +852,7 @@ function App() {
               !providers.anthropic &&
               !providers.openrouter && (
               <div className="notice setup-notice">
-                <strong>Connect an AI provider to start a discussion.</strong>
+                <strong>Connect an AI provider to start a chat.</strong>
                 <span>
                   Add an <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, or
                   <code> OPENROUTER_API_KEY</code> to the server’s <code>.env</code> file,
@@ -780,6 +866,7 @@ function App() {
                 key={activeMeeting.id}
                 meeting={activeMeeting}
                 onBack={() => setActiveMeetingId(null)}
+                onEdit={() => setEditingMeeting(activeMeeting)}
                 onUpdate={updateMeeting}
                 providers={providers}
               />
@@ -787,19 +874,19 @@ function App() {
               <>
                 <MeetingSection
                   meetings={activeMeetings}
-                  title="Active meetings"
+                  title="Ongoing boardrooms"
                   onOpen={setActiveMeetingId}
                 />
                 <MeetingSection
                   meetings={completedMeetings}
-                  title="Completed meetings"
+                  title="Completed legacy meetings"
                   onOpen={setActiveMeetingId}
                 />
                 {meetings.length === 0 && (
                   <div className="empty-state">
                     <span className="empty-state-icon" aria-hidden="true">✳</span>
-                    <h2>Your boardroom starts here</h2>
-                    <p>Create a discussion or chat, then choose which agents should join.</p>
+                    <h2>Your chats start here</h2>
+                    <p>Create a chat, choose its type, then select which advisors should join.</p>
                     <button
                       className="primary-button"
                       onClick={() => setShowMeetingModal(true)}
@@ -866,7 +953,7 @@ function App() {
               </div>
             )}
             <p className="agent-library-note">
-              Saving agent edits updates their settings in existing meetings. Run a meeting again to use the updated settings.
+              Saving agent edits updates their settings in existing boardrooms.
             </p>
           </section>
         )}
@@ -874,7 +961,7 @@ function App() {
 
       <footer className="page-footer">
         <span>Thoughtful perspectives, brought together.</span>
-        <span>Agent profiles and meetings sync across Boardrooms tabs and devices.</span>
+        <span>Agent profiles and chats sync across Boardrooms tabs and devices.</span>
       </footer>
 
       {showAgentModal && (
@@ -889,11 +976,16 @@ function App() {
           onSave={saveAgent}
         />
       )}
-      {showMeetingModal && (
+      {(showMeetingModal || editingMeeting) && (
         <MeetingEditorModal
           agents={agents}
-          onClose={() => setShowMeetingModal(false)}
-          onCreate={createMeeting}
+          key={editingMeeting?.id ?? 'new-meeting'}
+          meeting={editingMeeting ?? undefined}
+          onClose={() => {
+            setShowMeetingModal(false)
+            setEditingMeeting(null)
+          }}
+          onSave={saveMeeting}
         />
       )}
     </div>
@@ -931,7 +1023,11 @@ function MeetingSection({ meetings, title, onOpen }: MeetingSectionProps) {
                     : 'Chat open'
                   : meetingStatusLabel(meeting.status)}
               </span>
-              {meeting.mode === 'chat' && <span className="meeting-mode-badge">CHAT</span>}
+              {meeting.mode === 'chat' && (
+                <span className="meeting-mode-badge">
+                  {meeting.chatType === 'document' ? 'REPORT CHAT' : 'INFO CHAT'}
+                </span>
+              )}
               <span className="meeting-date">{formatDate(meeting.updatedAt)}</span>
             </div>
             <h3>{meeting.name}</h3>
@@ -972,6 +1068,9 @@ function AgentCard({ agent, index, onEdit, onDelete }: AgentCardProps) {
           <span className="profile-index">ADVISOR 0{index + 1}</span>
           <h2>{agent.name}</h2>
           <p>{agent.role}</p>
+          <span className="agent-default-role">
+            Default boardroom role · {chatRoleLabel(agent.defaultChatRole)}
+          </span>
         </div>
         <button className="secondary-button" onClick={onEdit} type="button">Edit</button>
       </div>

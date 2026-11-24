@@ -5,6 +5,7 @@ import type {
   BoardroomRunInput,
   BoardroomTurn,
 } from '../shared/boardroom'
+import { isBoardroomImageSource } from '../shared/chat'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -21,6 +22,17 @@ function readEvent(value: unknown): BoardroomEvent {
     typeof value.totalRounds === 'number'
   ) {
     return { type: value.type, round: value.round, totalRounds: value.totalRounds }
+  }
+  if (
+    (value.type === 'route_start' || value.type === 'route_complete') &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string'
+  ) {
+    return {
+      type: value.type,
+      agentId: value.agentId,
+      agentName: value.agentName,
+    }
   }
   if (
     value.type === 'turn_start' &&
@@ -43,7 +55,8 @@ function readEvent(value: unknown): BoardroomEvent {
       typeof turn.agentName === 'string' &&
       typeof turn.agentRole === 'string' &&
       typeof turn.round === 'number' &&
-      typeof turn.content === 'string'
+      typeof turn.content === 'string' &&
+      (turn.imageUrl === undefined || isBoardroomImageSource(turn.imageUrl))
     ) {
       const parsedTurn: BoardroomTurn = {
         id: turn.id,
@@ -52,6 +65,7 @@ function readEvent(value: unknown): BoardroomEvent {
         agentRole: turn.agentRole,
         round: turn.round,
         content: turn.content,
+        ...(typeof turn.imageUrl === 'string' ? { imageUrl: turn.imageUrl } : {}),
       }
       return { type: value.type, turn: parsedTurn }
     }

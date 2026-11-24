@@ -17,12 +17,14 @@ export class ProviderModelsError extends Error {
   }
 }
 
-function providerKeyName(provider: Exclude<Provider, 'openrouter'>): string {
+function providerKeyName(
+  provider: Exclude<Provider, 'openrouter' | 'magnific'>,
+): string {
   return provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY'
 }
 
 export function requireProviderApiKey(
-  provider: Exclude<Provider, 'openrouter'>,
+  provider: Exclude<Provider, 'openrouter' | 'magnific'>,
   environment: Record<string, string | undefined> = process.env,
 ): string {
   const apiKey = environment[providerKeyName(provider)]?.trim()
@@ -39,6 +41,14 @@ export function normalizeProviderModels(models: ProviderModel[]): ProviderModel[
       id,
       name: model.name.trim() || id,
       ...(model.isFree === true ? { isFree: true } : {}),
+      ...(model.supportsImageGeneration === true
+        ? { supportsImageGeneration: true }
+        : {}),
+      ...(model.supportsImageProcessing === true
+        ? { supportsImageProcessing: true }
+        : {}),
+      ...(model.supportsVision === true ? { supportsVision: true } : {}),
+      ...(model.supportsWebSearch === true ? { supportsWebSearch: true } : {}),
     })
   }
 
@@ -80,7 +90,18 @@ async function listOpenAIModels(): Promise<ProviderModel[]> {
   })
   const models: ProviderModel[] = []
   for await (const model of client.models.list()) {
-    models.push({ id: model.id, name: model.id })
+    const supportsVision =
+      /^(gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4)([-.]|$)/i.test(model.id)
+    const supportsImageGeneration =
+      /^(gpt-image-|dall-e-)/i.test(model.id)
+    const supportsWebSearch = /^(gpt-|o[134])/i.test(model.id)
+    models.push({
+      id: model.id,
+      name: model.id,
+      ...(supportsVision ? { supportsVision: true } : {}),
+      ...(supportsImageGeneration ? { supportsImageGeneration: true } : {}),
+      ...(supportsWebSearch ? { supportsWebSearch: true } : {}),
+    })
     if (models.length >= MODEL_LIST_LIMIT) break
   }
   return normalizeProviderModels(models)
@@ -95,7 +116,12 @@ async function listAnthropicModels(): Promise<ProviderModel[]> {
   const models: ProviderModel[] = []
   for await (const model of client.models.list()) {
     if (model.lifecycle !== 'active') continue
-    models.push({ id: model.id, name: model.display_name })
+    models.push({
+      id: model.id,
+      name: model.display_name,
+      supportsVision: true,
+      supportsWebSearch: true,
+    })
     if (models.length >= MODEL_LIST_LIMIT) break
   }
   return normalizeProviderModels(models)
@@ -117,10 +143,27 @@ async function listOpenRouterModels(): Promise<ProviderModel[]> {
 
   const models = payload.data.flatMap((item): ProviderModel[] => {
     if (!isRecord(item) || typeof item.id !== 'string') return []
+    const architecture = isRecord(item.architecture) ? item.architecture : null
+    const inputModalities =
+      architecture && Array.isArray(architecture.input_modalities)
+        ? architecture.input_modalities
+        : []
+    const outputModalities =
+      architecture && Array.isArray(architecture.output_modalities)
+        ? architecture.output_modalities
+        : []
+    const supportedParameters = Array.isArray(item.supported_parameters)
+      ? item.supported_parameters
+      : []
     return [{
       id: item.id,
       name: typeof item.name === 'string' ? item.name : item.id,
       ...(isFreeOpenRouterPricing(item.pricing) ? { isFree: true } : {}),
+      ...(inputModalities.includes('image') ? { supportsVision: true } : {}),
+      ...(outputModalities.includes('image') ? { supportsImageGeneration: true } : {}),
+      ...(supportedParameters.includes('web_search_options')
+        ? { supportsWebSearch: true }
+        : {}),
     }]
   })
   return normalizeProviderModels(models).slice(0, MODEL_LIST_LIMIT)
@@ -135,6 +178,24 @@ export async function listProviderModels(provider: Provider): Promise<ProviderMo
         return await listAnthropicModels()
       case 'openrouter':
         return await listOpenRouterModels()
+      case 'magnific':
+        return [
+          { id: 'mystic:realism', name: 'Mystic Realism', supportsImageGeneration: true },
+          { id: 'mystic:fluid', name: 'Mystic Fluid', supportsImageGeneration: true },
+          { id: 'mystic:zen', name: 'Mystic Zen', supportsImageGeneration: true },
+          { id: 'mystic:flexible', name: 'Mystic Flexible', supportsImageGeneration: true },
+          { id: 'mystic:super_real', name: 'Mystic Super Real', supportsImageGeneration: true },
+          {
+            id: 'mystic:editorial_portraits',
+            name: 'Mystic Editorial Portraits',
+            supportsImageGeneration: true,
+          },
+          {
+            id: 'precision-v2',
+            name: 'Precision Upscaler v2',
+            supportsImageProcessing: true,
+          },
+        ]
     }
   } catch (error) {
     if (error instanceof ProviderModelsError) throw error

@@ -6,11 +6,18 @@ import type {
   BoardroomChatMessage,
   BoardroomReport,
   BoardroomTurn,
+  ChatType,
   Meeting,
   MeetingMode,
   MeetingStatus,
   Provider,
 } from '../shared/boardroom.ts'
+import {
+  isBoardroomImageSource,
+  normalizeChatAgentRoles,
+  normalizeDefaultChatRole,
+  normalizeModelCapabilities,
+} from '../shared/chat.ts'
 
 const stateDirectory =
   process.env.BOARDROOMS_DATA_DIR?.trim() ||
@@ -48,7 +55,8 @@ function readAgent(value: unknown): AgentConfig | null {
     value.role.length > 120 ||
     (value.provider !== 'openai' &&
       value.provider !== 'anthropic' &&
-      value.provider !== 'openrouter') ||
+      value.provider !== 'openrouter' &&
+      value.provider !== 'magnific') ||
     typeof value.model !== 'string' ||
     !value.model.trim() ||
     value.model.length > 120 ||
@@ -62,11 +70,16 @@ function readAgent(value: unknown): AgentConfig | null {
     return null
   }
 
+  const defaultChatRole = normalizeDefaultChatRole(value.defaultChatRole)
+  const modelCapabilities = normalizeModelCapabilities(value.modelCapabilities)
+  if (!defaultChatRole || !modelCapabilities) return null
   const provider: Provider = value.provider
   return {
     id: value.id,
     name: value.name,
     role: value.role,
+    defaultChatRole,
+    modelCapabilities,
     provider,
     model: value.model,
     knowledge: value.knowledge,
@@ -119,7 +132,8 @@ function readChatMessage(value: unknown): BoardroomChatMessage | null {
     (value.agentName !== undefined &&
       (typeof value.agentName !== 'string' || value.agentName.length > 80)) ||
     (value.agentRole !== undefined &&
-      (typeof value.agentRole !== 'string' || value.agentRole.length > 120))
+      (typeof value.agentRole !== 'string' || value.agentRole.length > 120)) ||
+    (value.imageUrl !== undefined && !isBoardroomImageSource(value.imageUrl))
   ) {
     return null
   }
@@ -138,6 +152,7 @@ function readChatMessage(value: unknown): BoardroomChatMessage | null {
     ...(typeof value.agentId === 'string' ? { agentId: value.agentId } : {}),
     ...(typeof value.agentName === 'string' ? { agentName: value.agentName } : {}),
     ...(typeof value.agentRole === 'string' ? { agentRole: value.agentRole } : {}),
+    ...(isBoardroomImageSource(value.imageUrl) ? { imageUrl: value.imageUrl } : {}),
   }
 }
 
@@ -176,6 +191,13 @@ function readMeeting(value: unknown): Meeting | null {
       ? 'discussion'
       : value.mode
     : undefined
+  const chatType = value && isRecord(value)
+    ? value.chatType === undefined
+      ? mode === 'chat'
+        ? 'document'
+        : 'informational'
+      : value.chatType
+    : undefined
   const chatMessagesValue =
     value && isRecord(value) && value.chatMessages === undefined
       ? []
@@ -198,6 +220,7 @@ function readMeeting(value: unknown): Meeting | null {
     value.agents.length > 5 ||
     typeof value.facilitatorId !== 'string' ||
     (mode !== 'discussion' && mode !== 'chat') ||
+    (chatType !== 'informational' && chatType !== 'document') ||
     typeof value.rounds !== 'number' ||
     !Number.isInteger(value.rounds) ||
     value.rounds < 1 ||
@@ -230,13 +253,23 @@ function readMeeting(value: unknown): Meeting | null {
   ) {
     return null
   }
+  const meetingAgents = agents.filter(
+    (agent): agent is AgentConfig => agent !== null,
+  )
+  const agentRoles = normalizeChatAgentRoles(
+    meetingAgents.map((agent) => agent.id),
+    value.agentRoles,
+  )
+  if (!agentRoles) return null
 
   return {
     id: value.id,
     name: value.name,
     task: value.task,
     mode: mode as MeetingMode,
-    agents: agents.filter((agent): agent is AgentConfig => agent !== null),
+    chatType: chatType as ChatType,
+    agents: meetingAgents,
+    agentRoles,
     facilitatorId: value.facilitatorId,
     rounds: value.rounds,
     createdAt: value.createdAt,
@@ -395,8 +428,11 @@ function agentsMatch(first: AgentConfig, second: AgentConfig): boolean {
   return (
     first.name === second.name &&
     first.role === second.role &&
+    first.defaultChatRole === second.defaultChatRole &&
     first.provider === second.provider &&
     first.model === second.model &&
+    JSON.stringify(first.modelCapabilities ?? {}) ===
+      JSON.stringify(second.modelCapabilities ?? {}) &&
     first.knowledge === second.knowledge &&
     first.skills === second.skills &&
     first.instructions === second.instructions

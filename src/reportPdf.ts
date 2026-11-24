@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf'
+import autoTable, { type HAlignType } from 'jspdf-autotable'
 import type { BoardroomReport } from '../shared/boardroom'
 
 function pdfSafeText(value: string): string {
@@ -14,6 +15,46 @@ function pdfSafeText(value: string): string {
     .replace(/\*\*/g, '')
     .replace(/__+/g, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim()
+  const content = trimmed
+    .replace(/^\|/, '')
+    .replace(/(?<!\\)\|$/, '')
+  const cells: string[] = []
+  let cell = ''
+  let inCode = false
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]
+    if (character === '\\' && content[index + 1] === '|') {
+      cell += '|'
+      index += 1
+    } else if (character === '`') {
+      inCode = !inCode
+      cell += character
+    } else if (character === '|' && !inCode) {
+      cells.push(cell.trim())
+      cell = ''
+    } else {
+      cell += character
+    }
+  }
+  cells.push(cell.trim())
+  return cells
+}
+
+function isMarkdownTableSeparator(cells: string[]): boolean {
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+}
+
+function tableAlignment(separator: string): HAlignType {
+  const left = separator.startsWith(':')
+  const right = separator.endsWith(':')
+  if (left && right) return 'center'
+  if (right) return 'right'
+  return 'left'
 }
 
 export function createReportPdf(report: BoardroomReport): jsPDF {
@@ -67,10 +108,81 @@ export function createReportPdf(report: BoardroomReport): jsPDF {
   y += 20
   pdf.setTextColor(55, 68, 58)
 
-  for (const rawLine of report.content.split(/\r?\n/)) {
-    const line = rawLine.trim()
+  const lines = report.content.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim()
     if (!line) {
       y += 7
+      continue
+    }
+
+    const headers = splitMarkdownTableRow(line)
+    const separator = lines[index + 1]
+      ? splitMarkdownTableRow(lines[index + 1])
+      : []
+    if (headers.length > 1 && isMarkdownTableSeparator(separator)) {
+      const rows: string[][] = []
+      index += 2
+      while (index < lines.length && lines[index].trim()) {
+        const row = splitMarkdownTableRow(lines[index])
+        if (row.length < 2) break
+        rows.push(row)
+        index += 1
+      }
+      index -= 1
+
+      const columnCount = Math.max(
+        headers.length,
+        ...rows.map((row) => row.length),
+      )
+      const normalizedHeaders = Array.from(
+        { length: columnCount },
+        (_, column) => pdfSafeText(headers[column] ?? ''),
+      )
+      const normalizedRows = rows.map((row) =>
+        Array.from(
+          { length: columnCount },
+          (_, column) => pdfSafeText(row[column] ?? ''),
+        ),
+      )
+      const columnStyles = Object.fromEntries(
+        Array.from({ length: columnCount }, (_, column) => [
+          column,
+          { halign: tableAlignment(separator[column] ?? '---') },
+        ]),
+      )
+
+      autoTable(pdf, {
+        head: [normalizedHeaders],
+        body: normalizedRows,
+        startY: y,
+        margin: { top: margin, right: margin, bottom: margin, left: margin },
+        theme: 'grid',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8,
+          cellPadding: 5,
+          overflow: 'linebreak',
+          valign: 'top',
+          lineColor: [220, 229, 220],
+          textColor: [55, 68, 58],
+        },
+        headStyles: {
+          fillColor: [74, 102, 79],
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+        },
+        alternateRowStyles: { fillColor: [247, 250, 246] },
+        columnStyles,
+      })
+
+      const table = (
+        pdf as jsPDF & { lastAutoTable?: { finalY: number } }
+      ).lastAutoTable
+      if (!table || typeof table.finalY !== 'number') {
+        throw new Error('Could not determine the report table layout.')
+      }
+      y = table.finalY + 12
       continue
     }
 

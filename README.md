@@ -1,8 +1,8 @@
 # Boardrooms
 
-Boardrooms is an AI meeting hub. Configure advisors with different roles,
+Boardrooms is an AI chat hub. Configure advisors with different roles,
 providers, models, and instructions; bring one or more into a boardroom; and
-work through a structured discussion or an ongoing chat.
+work through an ongoing chat or build a report together.
 
 ## Requirements
 
@@ -21,9 +21,10 @@ chmod 600 .env
 
 Set any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` in
 `.env`, and set `BOARDROOMS_PASSWORD` to a unique password of at least 16
-characters for network sign-in. Provider keys stay on the server and are never
-sent to the browser. Do not commit `.env`. If `.env` already exists, edit it
-rather than replacing it.
+characters for network sign-in. Set `MAGNIFIC_API_KEY` to enable the Magnific
+image processor. Provider keys stay on the server and are never sent to the
+browser. Do not commit `.env`. If `.env` already exists, edit it rather than
+replacing it.
 
 ## Run locally
 
@@ -38,35 +39,49 @@ are made server-side.
 
 ## How a boardroom works
 
-- Use the **Meetings** tab to create a structured meeting or ongoing chat, then
-  choose one to five named agents from the roster.
+- Use the **Chats** tab to create an ongoing chat, choose its type, and select
+  up to five agents from the roster. Each profile has a default boardroom role;
+  that role is preselected when the agent is added.
 - Use the **Agents** tab to add, edit, or delete agent profiles. Configure each
   agent's provider, model ID, perspective, knowledge, skills, and instructions.
 - OpenRouter agents use the OpenAI-compatible API. Enter the provider-prefixed
   model slug from your OpenRouter model catalog (for example,
   `openai/gpt-4o-mini`).
-- Choose one to three discussion rounds and a facilitator.
-- Each advisor speaks in turn and can respond to the earlier discussion. The
-  facilitator makes a final synthesis.
-- A run makes one provider request per advisor per round, plus one synthesis
-  request. Provider usage may incur charges.
-- In an ongoing chat, send a message and each advisor responds before the
-  facilitator synthesizes the board's recommendation. Follow-up messages use
-  the preceding conversation for context. Each message makes one request per
-  advisor plus one synthesis request, so provider usage may incur charges.
-- Choose **Generate report** beneath a chat conclusion to create a scope
+- Assign roles to agents per chat. Each new boardroom needs one
+  **Orchestrator** and at least one **Meeting Member**. The Orchestrator makes
+  one additional request per message and routes it to the smallest effective
+  sequence of one to three agents. Start a message with `@{advisor name}` to
+  address one Meeting Member directly; for example,
+  `@{Bonnie Green} assess the low-carbon options`. Follow-up messages include
+  the earlier conversation for context.
+- A **Researcher** uses the provider's web-search integration and includes
+  source links. Attach a PNG, JPEG, or WebP image (up to 7 MB) to have the
+  **Image Analyser** inspect it. The **Image Generator** works with models
+  marked as image-capable, including Magnific Mystic; generated images are
+  saved in the private server data directory and shared through the signed-in
+  app. Image generation and Magnific processing may incur provider charges.
+- The **Facilitator** asks focused clarifying questions when required, the
+  **Critic** identifies risks and mitigations, the **Synthesizer** reconciles
+  contributions, and the **Executor** turns approved decisions into usable
+  artifacts.
+- Report/document-building chats have **Chat** and **Report preview** tabs.
+  The Orchestrator routes each turn and the team synthesizes the chat. Choose
+  **Generate report** beneath a team synthesis to create a scope
   document, review document, or custom report. Each advisor drafts relevant
-  sections from their expertise and the facilitator assembles the final
-  document. Report generation makes one request per advisor plus one facilitator
-  request; downloading the saved PDF does not make another provider request.
+  sections from their expertise and the **Document Formatter** applies the
+  final document style. Configure company style rules in that agent's
+  instructions or knowledge. Downloading a saved PDF makes no provider request.
+- The **Image Processor** uses Magnific to upscale PNG, JPEG, or WebP images
+  (2x–16x); uploads are sent to Magnific and may incur charges.
 
 Agent profiles, meeting details, discussion transcripts, and chat messages are
 stored by the server in `.boardrooms-data/state.json`, so they are shared across
 signed-in browsers and devices. Generated reports are saved with their
 boardroom. This private data directory is excluded from Git. On first
 connection, existing browser data is imported into the server store. Editing an
-agent updates its settings in existing meetings; choose **Run again** to start
-a fresh structured discussion with those settings.
+agent updates its settings in existing boardrooms for future chat turns.
+Previously saved structured meetings remain available as legacy records, but
+new boardrooms are chat-only.
 
 OpenRouter's free model pricing does not bypass account usage or rate limits.
 Free model requests can still fail if the OpenRouter account's configured quota
@@ -111,3 +126,7 @@ permissions changed, and restart with
   JSON events.
 - `POST /api/boardrooms/report` — streams advisor contributions and the completed
   report as newline-delimited JSON events.
+- `POST /api/boardrooms/images/upscale` — upscales an uploaded image through
+  Magnific and returns its result URL.
+- `GET /api/boardrooms/images/generated/:file` — serves a generated image to
+  an authenticated boardroom session.

@@ -8,8 +8,17 @@ import type {
   BoardroomReportType,
   BoardroomRunInput,
   BoardroomTurn,
+  ChatAgentRole,
   Provider,
 } from '../shared/boardroom.ts'
+import {
+  isSecureImageUrl,
+  normalizeChatAgentRoles,
+  normalizeDefaultChatRole,
+  normalizeModelCapabilities,
+} from '../shared/chat.ts'
+import { persistGeneratedImage } from './generatedImages.ts'
+import { generateWithMagnific, MagnificError } from './magnific.ts'
 
 export const MAX_AGENTS = 5
 export const MAX_ROUNDS = 3
@@ -42,18 +51,43 @@ function readText(
   return text
 }
 
+function readImageDataUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new BoardroomInputError('Attach a PNG, JPEG, or WebP image for analysis.')
+  }
+  const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value)
+  if (!match) {
+    throw new BoardroomInputError('Attach a PNG, JPEG, or WebP image for analysis.')
+  }
+  const bytes = Buffer.from(match[2], 'base64')
+  if (
+    bytes.length === 0 ||
+    bytes.length > 7 * 1024 * 1024 ||
+    bytes.toString('base64') !== match[2]
+  ) {
+    throw new BoardroomInputError('Images for analysis must be valid and no larger than 7 MB.')
+  }
+  return value
+}
+
 export function parseBoardroomInput(value: unknown): BoardroomRunInput {
   if (!isRecord(value)) {
     throw new BoardroomInputError('Request body must be an object.')
   }
 
   const task = readText(value.task, 'Task', 8_000)
+  const meetingId =
+    value.meetingId === undefined
+      ? undefined
+      : readText(value.meetingId, 'Meeting ID', 80)
   const context = readText(
     value.context,
     'Conversation context',
     MAX_CONTEXT_LENGTH,
     false,
   )
+  const imageDataUrl = readImageDataUrl(value.imageDataUrl)
   if (!Array.isArray(value.agents) || value.agents.length < 1) {
     throw new BoardroomInputError('Add at least one agent to the boardroom.')
   }
@@ -74,7 +108,12 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
     seenIds.add(id)
 
     const provider = value.provider
-    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'openrouter') {
+    if (
+      provider !== 'openai' &&
+      provider !== 'anthropic' &&
+      provider !== 'openrouter' &&
+      provider !== 'magnific'
+    ) {
       throw new BoardroomInputError(`Agent ${index + 1} has an unsupported provider.`)
     }
 
@@ -85,13 +124,20 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
     if (!validModel) {
       throw new BoardroomInputError(`Agent ${index + 1} has an invalid model ID.`)
     }
+    const defaultChatRole = normalizeDefaultChatRole(value.defaultChatRole)
+    const modelCapabilities = normalizeModelCapabilities(value.modelCapabilities)
+    if (!defaultChatRole || !modelCapabilities) {
+      throw new BoardroomInputError(`Agent ${index + 1} has invalid role or model capabilities.`)
+    }
 
     return {
       id,
       name: readText(value.name, `Agent ${index + 1} name`, 80),
       role: readText(value.role, `Agent ${index + 1} role`, 120),
+      defaultChatRole,
       provider,
       model,
+      modelCapabilities,
       knowledge: readText(
         value.knowledge,
         `Agent ${index + 1} knowledge`,
@@ -108,6 +154,58 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
     }
   })
 
+  const agentRoles = normalizeChatAgentRoles(
+    agents.map((agent) => agent.id),
+    value.agentRoles,
+  )
+  if (!agentRoles) {
+    throw new BoardroomInputError(
+      'Assign each agent one valid role, assign each specialist role only once, and include at least one Meeting Member.',
+    )
+  }
+  for (const agent of agents) {
+    const role = agentRoles[agent.id]
+    if (
+      agent.provider === 'magnific' &&
+      role !== 'image_generator' &&
+      role !== 'image_processor'
+    ) {
+      throw new BoardroomInputError(
+        'Magnific can only be assigned to Image Generator or Image Processor roles.',
+      )
+    }
+    if (
+      imageDataUrl &&
+      !Object.values(agentRoles).some((role) => role === 'image_analyser')
+    ) {
+      throw new BoardroomInputError('Add an Image Analyser to review the attached image.')
+    }
+    if (role === 'image_generator' && !agent.modelCapabilities?.supportsImageGeneration) {
+      throw new BoardroomInputError(
+        `The selected model for ${agent.name} does not support image generation.`,
+      )
+    }
+    if (
+      role === 'image_processor' &&
+      agent.provider === 'magnific' &&
+      !agent.modelCapabilities?.supportsImageProcessing
+    ) {
+      throw new BoardroomInputError(
+        `The selected Magnific model for ${agent.name} does not support image processing.`,
+      )
+    }
+    if (role === 'image_analyser' && !agent.modelCapabilities?.supportsVision) {
+      throw new BoardroomInputError(
+        `The selected model for ${agent.name} does not support image input.`,
+      )
+    }
+    if (role === 'researcher' && !agent.modelCapabilities?.supportsWebSearch) {
+      throw new BoardroomInputError(
+        `The selected model for ${agent.name} does not support web search.`,
+      )
+    }
+  }
+
   const rounds = value.rounds === undefined ? 2 : value.rounds
   if (
     typeof rounds !== 'number' ||
@@ -118,6 +216,11 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
     throw new BoardroomInputError(`Rounds must be a whole number from 1 to ${MAX_ROUNDS}.`)
   }
 
+  const synthesize = value.synthesize === undefined ? true : value.synthesize
+  if (typeof synthesize !== 'boolean') {
+    throw new BoardroomInputError('Synthesize must be a boolean.')
+  }
+
   const facilitatorId =
     value.facilitatorId === undefined
       ? agents[0].id
@@ -125,10 +228,17 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
   if (!agents.some((agent) => agent.id === facilitatorId)) {
     throw new BoardroomInputError('Choose a facilitator from the agents in this boardroom.')
   }
+  if (agentRoles[facilitatorId] !== 'advisor') {
+    throw new BoardroomInputError('Choose an advisor as the boardroom facilitator.')
+  }
 
   return {
+    ...(meetingId ? { meetingId } : {}),
     task,
     ...(context ? { context } : {}),
+    ...(imageDataUrl ? { imageDataUrl } : {}),
+    synthesize,
+    agentRoles,
     agents,
     rounds,
     facilitatorId,
@@ -156,7 +266,18 @@ export function parseBoardroomReportInput(value: unknown): BoardroomReportInput 
     agents: value.agents,
     rounds: 1,
     facilitatorId: value.facilitatorId,
+    agentRoles: value.agentRoles,
   })
+  const formatterId =
+    value.formatterId === undefined
+      ? Object.entries(validated.agentRoles ?? {}).find(([, role]) => role === 'report_formatter')?.[0]
+      : readText(value.formatterId, 'Formatter ID', 80)
+  if (
+    formatterId &&
+    validated.agentRoles?.[formatterId] !== 'report_formatter'
+  ) {
+    throw new BoardroomInputError('Choose a report formatter assigned to this boardroom.')
+  }
 
   return {
     title,
@@ -164,7 +285,9 @@ export function parseBoardroomReportInput(value: unknown): BoardroomReportInput 
     instructions,
     context: validated.context ?? '',
     agents: validated.agents,
+    agentRoles: validated.agentRoles,
     facilitatorId: validated.facilitatorId,
+    ...(formatterId ? { formatterId } : {}),
   }
 }
 
@@ -204,7 +327,64 @@ Your turn (${round} of ${totalRounds}): ${guidance}
 Be specific and concise. Keep your contribution under 200 words.`
 }
 
-function buildSystemPrompt(agent: AgentConfig): string {
+function chatRoleInstructions(role: ChatAgentRole): string {
+  switch (role) {
+    case 'advisor':
+      return 'Contribute actionable judgment from your assigned specialty. Avoid repeating existing points, and identify domain-specific trade-offs.'
+    case 'director':
+      return 'Route the latest user request to the minimum effective sequence of one to three assigned agents. You do not answer the request.'
+    case 'researcher':
+      return 'Ground current or verifiable claims in web research. Cite source URLs, distinguish verified facts from estimates, and flag uncertainty.'
+    case 'facilitator':
+      return 'When the goal is ambiguous or requirements conflict, ask one concise, high-impact clarifying question before the team commits. Otherwise keep scope focused.'
+    case 'critic':
+      return 'Stress-test proposals constructively. Identify weak assumptions, risks, edge cases, and practical mitigations.'
+    case 'synthesizer':
+      return 'Consolidate only the contributions already made. Show agreement, disagreements, trade-offs, and next steps without introducing new domain opinions.'
+    case 'image_processor':
+      return 'Image processing is handled by the Magnific integration, not a text response.'
+    case 'image_generator':
+      return 'Create an image that follows the user’s visual brief. Image generation is handled by the assigned image-capable model.'
+    case 'image_analyser':
+      return 'Describe observable details in the supplied image, separate facts from interpretation, and identify defects or useful improvements.'
+    case 'report_formatter':
+      return 'Format formal deliverables clearly and consistently while preserving established facts and decisions.'
+    case 'executor':
+      return 'Turn approved decisions into complete, immediately usable artifacts. State prerequisites and assumptions without reopening settled choices.'
+  }
+}
+
+function chatRoleLabel(role: ChatAgentRole): string {
+  switch (role) {
+    case 'advisor':
+      return 'Meeting Member'
+    case 'director':
+      return 'Orchestrator'
+    case 'researcher':
+      return 'Researcher'
+    case 'facilitator':
+      return 'Facilitator'
+    case 'critic':
+      return 'Critic'
+    case 'synthesizer':
+      return 'Synthesizer'
+    case 'image_processor':
+      return 'Image Processor'
+    case 'image_generator':
+      return 'Image Generator'
+    case 'image_analyser':
+      return 'Image Analyser'
+    case 'report_formatter':
+      return 'Document Formatter'
+    case 'executor':
+      return 'Executor'
+  }
+}
+
+function buildSystemPrompt(
+  agent: AgentConfig,
+  role: ChatAgentRole = agent.defaultChatRole,
+): string {
   const knowledge = agent.knowledge
     ? `\nRelevant knowledge and background:\n${agent.knowledge}`
     : ''
@@ -213,7 +393,7 @@ function buildSystemPrompt(agent: AgentConfig): string {
     ? `\nAdditional guidance from the user:\n${agent.instructions}`
     : ''
 
-  return `You are ${agent.name}, serving as ${agent.role} in a collaborative boardroom. Bring the knowledge and perspective of this role, distinguish facts from assumptions, and be constructive with the other advisors.${knowledge}${skills}${extraInstructions}`
+  return `You are ${agent.name}, serving as ${agent.role} in a collaborative boardroom. Your assigned boardroom role is ${role}. ${chatRoleInstructions(role)} Distinguish facts from assumptions and be constructive with the other participants.${knowledge}${skills}${extraInstructions}`
 }
 
 function openAIClient(): OpenAI {
@@ -239,45 +419,205 @@ function openRouterClient(): OpenAI {
   })
 }
 
+function imageDataParts(imageDataUrl: string): {
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp'
+  data: string
+} {
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(
+    imageDataUrl,
+  )
+  if (!match) throw new Error('The attached image is invalid.')
+  const mediaType =
+    match[1] === 'image/png'
+      ? 'image/png'
+      : match[1] === 'image/jpeg'
+        ? 'image/jpeg'
+        : 'image/webp'
+  return { mediaType, data: match[2] }
+}
+
+function findImageSource(value: unknown): string | null {
+  if (typeof value === 'string') {
+    if (isSecureImageUrl(value)) return value
+    if (/^data:image\/(?:png|jpeg|webp);base64,/.test(value)) return value
+    return null
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const source = findImageSource(item)
+      if (source) return source
+    }
+  } else if (isRecord(value)) {
+    for (const key of ['url', 'image_url', 'images', 'data']) {
+      if (key in value) {
+        const source = findImageSource(value[key])
+        if (source) return source
+      }
+    }
+  }
+  return null
+}
+
+async function generateImage(
+  agent: AgentConfig,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<string> {
+  if (agent.provider === 'magnific') {
+    return generateWithMagnific({ model: agent.model, prompt }, signal)
+  }
+
+  if (agent.provider === 'openai') {
+    const response = await openAIClient().images.generate(
+      { model: agent.model, prompt, size: '1024x1024', n: 1 },
+      { signal },
+    )
+    const image = response.data?.[0]
+    if (image?.url && isSecureImageUrl(image.url)) return image.url
+    if (image?.b64_json) {
+      return persistGeneratedImage(`data:image/png;base64,${image.b64_json}`)
+    }
+    throw new Error('The image provider did not return a usable image.')
+  }
+
+  if (agent.provider === 'openrouter') {
+    const generationOptions: Record<string, unknown> = {
+      modalities: ['image', 'text'],
+    }
+    const response = await openRouterClient().chat.completions.create(
+      {
+        model: agent.model,
+        messages: [{ role: 'user', content: prompt }],
+        ...generationOptions,
+      },
+      { signal },
+    )
+    const image = findImageSource(response.choices[0]?.message)
+    if (!image) throw new Error('The image provider did not return a usable image.')
+    return image.startsWith('data:')
+      ? persistGeneratedImage(image)
+      : image
+  }
+
+  throw new Error('This provider does not support image generation.')
+}
+
+function collectSources(value: unknown, sources = new Map<string, string>()): Map<string, string> {
+  if (Array.isArray(value)) {
+    for (const item of value) collectSources(item, sources)
+  } else if (isRecord(value)) {
+    const url = value.url
+    const title = value.title
+    if (
+      typeof url === 'string' &&
+      url.startsWith('https://') &&
+      (typeof title === 'string' || value.type === 'url_citation')
+    ) {
+      sources.set(url, typeof title === 'string' ? title : url)
+    }
+    for (const item of Object.values(value)) collectSources(item, sources)
+  }
+  return sources
+}
+
+function appendSources(content: string, value: unknown): string {
+  const sources = [...collectSources(value)]
+  if (sources.length === 0) return content
+  const references = sources
+    .map(([url, title]) => `- [${title}](${url})`)
+    .join('\n')
+  return `${content}\n\nSources:\n${references}`
+}
+
 async function complete(
   agent: AgentConfig,
   system: string,
   prompt: string,
   signal: AbortSignal,
   maxOutputTokens = 700,
+  role?: ChatAgentRole,
+  imageDataUrl?: string,
 ): Promise<string> {
   let content: string
   if (agent.provider === 'openai') {
+    const input: string | OpenAI.Responses.ResponseInput =
+      role === 'image_analyser' && imageDataUrl
+        ? [{
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: prompt },
+              { type: 'input_image', image_url: imageDataUrl, detail: 'auto' },
+            ],
+          }]
+        : prompt
     const response = await openAIClient().responses.create(
       {
         model: agent.model,
         instructions: system,
-        input: prompt,
+        input,
         max_output_tokens: maxOutputTokens,
+        ...(role === 'researcher'
+          ? { tools: [{ type: 'web_search_preview' as const }] }
+          : {}),
       },
       { signal },
     )
-    content = response.output_text
+    content = role === 'researcher'
+      ? appendSources(response.output_text, response.output)
+      : response.output_text
   } else if (agent.provider === 'openrouter') {
     const response = await openRouterClient().chat.completions.create(
       {
         model: agent.model,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: prompt },
+          {
+            role: 'user',
+            content:
+              role === 'image_analyser' && imageDataUrl
+                ? [
+                    { type: 'text', text: prompt },
+                    { type: 'image_url', image_url: { url: imageDataUrl } },
+                  ]
+                : prompt,
+          },
         ],
         max_tokens: maxOutputTokens,
+        ...(role === 'researcher' ? { plugins: [{ id: 'web' }] } : {}),
       },
       { signal },
     )
-    content = response.choices[0]?.message.content ?? ''
-  } else {
+    const message = response.choices[0]?.message
+    content =
+      typeof message?.content === 'string'
+        ? message.content
+        : ''
+    if (role === 'researcher') content = appendSources(content, message)
+  } else if (agent.provider === 'anthropic') {
+    const userContent: Anthropic.Messages.ContentBlockParam[] = [{ type: 'text', text: prompt }]
+    if (role === 'image_analyser' && imageDataUrl) {
+      const image = imageDataParts(imageDataUrl)
+      userContent.push({
+        type: 'image',
+        source: { type: 'base64', media_type: image.mediaType, data: image.data },
+      })
+    }
     const response = await anthropicClient().messages.create(
       {
         model: agent.model,
         system,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: userContent }],
         max_tokens: maxOutputTokens,
+        ...(role === 'researcher'
+          ? {
+              tools: [{
+                type: 'web_search_20250305' as const,
+                name: 'web_search',
+                max_uses: 3,
+              }],
+            }
+          : {}),
       },
       { signal },
     )
@@ -285,6 +625,9 @@ async function complete(
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
       .join('\n')
+    if (role === 'researcher') content = appendSources(content, response.content)
+  } else {
+    throw new Error('Magnific models can only be used for image roles.')
   }
 
   const text = content.trim()
@@ -300,10 +643,13 @@ function providerLabel(provider: Provider): string {
       return 'Anthropic'
     case 'openrouter':
       return 'OpenRouter'
+    case 'magnific':
+      return 'Magnific'
   }
 }
 
 function providerErrorMessage(provider: Provider, error: unknown): string {
+  if (error instanceof MagnificError) return error.message
   const status =
     isRecord(error) && typeof error.status === 'number' ? error.status : undefined
   const label = providerLabel(provider)
@@ -332,28 +678,113 @@ export async function runBoardroom(
   signal: AbortSignal,
 ): Promise<void> {
   const transcript: BoardroomTurn[] = []
+  const agentRoles =
+    input.agentRoles ??
+    Object.fromEntries(input.agents.map((agent) => [agent.id, 'advisor' as ChatAgentRole]))
+  const orchestrator = input.agents.find((agent) => agentRoles[agent.id] === 'director')
+  let respondingAgents = input.agents.filter(
+    (agent) => agentRoles[agent.id] === 'advisor',
+  )
+
+  if (orchestrator) {
+    const candidates = input.agents.filter(
+      (agent) =>
+        agent.id !== orchestrator.id &&
+        agentRoles[agent.id] !== 'image_processor' &&
+        (agentRoles[agent.id] !== 'image_analyser' || Boolean(input.imageDataUrl)) &&
+        (agentRoles[agent.id] !== 'report_formatter' || input.synthesize !== false),
+    )
+    if (candidates.length === 0) {
+      throw new Error('The Orchestrator has no eligible agents to route this request to.')
+    }
+
+    emit({
+      type: 'route_start',
+      agentId: orchestrator.id,
+      agentName: orchestrator.name,
+    })
+    let selection: string
+    try {
+      selection = await complete(
+        orchestrator,
+        `${buildSystemPrompt(orchestrator, 'director')}\n\nSelect the minimum effective sequence of one to three agents. If clarification is needed, select only the Facilitator. Include a Researcher for current or verifiable facts, a Critic to stress-test high-impact proposals, a Synthesizer after multiple contributors, an Image Generator for visual creation, and an Image Analyser whenever an image is supplied. Select the Document Formatter for formal deliverables and the Executor for implementation-ready artifacts. Do not select yourself or Image Processor. Return only a JSON array of agent IDs in speaking order.`,
+        `Latest user request:\n${input.task}${input.imageDataUrl ? '\nAn image is attached for analysis.' : ''}\n\n${input.context ? `Prior conversation:\n${input.context}\n\n` : ''}Available agents:\n${candidates.map((agent) => `ID: ${agent.id}\nName: ${agent.name}\nBoardroom role: ${agentRoles[agent.id]}\nExpertise: ${agent.role}\nKnowledge: ${agent.knowledge}\nSkills: ${agent.skills}`).join('\n\n')}\n\nReturn a JSON array with one to three IDs in the order they should speak. Do not include an agent that is not listed.`,
+        signal,
+        200,
+        'director',
+      )
+    } catch (error) {
+      if (signal.aborted) return
+      throw new Error(providerErrorMessage(orchestrator.provider, error))
+    }
+
+    const selectedAgents = parseOrchestratorSelection(selection, candidates)
+    if (!selectedAgents) {
+      throw new Error('The Orchestrator returned an invalid routing plan. Please try again.')
+    }
+    respondingAgents = selectedAgents
+    const imageAnalyser = input.imageDataUrl
+      ? candidates.find((agent) => agentRoles[agent.id] === 'image_analyser')
+      : undefined
+    if (imageAnalyser && !respondingAgents.includes(imageAnalyser)) {
+      respondingAgents = [imageAnalyser, ...respondingAgents.slice(0, 2)]
+    }
+    for (const agent of respondingAgents) {
+      emit({ type: 'route_complete', agentId: agent.id, agentName: agent.name })
+    }
+  }
+
+  const selectedSynthesizer = respondingAgents.find(
+    (agent) => agentRoles[agent.id] === 'synthesizer',
+  )
+  respondingAgents = respondingAgents.filter(
+    (agent) => agentRoles[agent.id] !== 'synthesizer',
+  )
+  if (selectedSynthesizer && respondingAgents.length === 0) {
+    const meetingMember = input.agents.find(
+      (agent) => agentRoles[agent.id] === 'advisor',
+    )
+    if (!meetingMember) {
+      throw new Error('The Orchestrator must route at least one contributing agent.')
+    }
+    respondingAgents = [meetingMember]
+  }
 
   for (let round = 1; round <= input.rounds; round += 1) {
     emit({ type: 'round_start', round, totalRounds: input.rounds })
 
-    for (const agent of input.agents) {
+    for (const agent of respondingAgents) {
       if (signal.aborted) return
       emit({ type: 'turn_start', agentId: agent.id, agentName: agent.name, round })
 
       let content: string
+      const role = agentRoles[agent.id] ?? 'advisor'
+      let imageUrl: string | undefined
       try {
-        content = await complete(
-          agent,
-          buildSystemPrompt(agent),
-          buildDiscussionPrompt(
-            input.task,
-            transcript,
-            round,
-            input.rounds,
-            input.context,
-          ),
-          signal,
-        )
+        if (role === 'image_generator') {
+          imageUrl = await generateImage(
+            agent,
+            `${buildSystemPrompt(agent, role)}\n\nCreate an image based on this user request. Follow the visual direction and subject closely; do not add text unless requested.\n\n${input.task}${input.context ? `\n\nConversation context:\n${input.context}` : ''}`,
+            signal,
+          )
+          content = 'Image generated from the boardroom brief.'
+        } else {
+          content = await complete(
+            agent,
+            buildSystemPrompt(agent, role),
+            `${buildDiscussionPrompt(
+              input.task,
+              transcript,
+              round,
+              input.rounds,
+              input.context,
+            )}${input.imageDataUrl && role === 'image_analyser' ? '\n\nAn image is attached. Analyse the supplied image directly.' : ''}`,
+            signal,
+            700,
+            role,
+            role === 'image_analyser' ? input.imageDataUrl : undefined,
+          )
+        }
       } catch (error) {
         if (signal.aborted) return
         throw new Error(providerErrorMessage(agent.provider, error))
@@ -363,9 +794,10 @@ export async function runBoardroom(
         id: crypto.randomUUID(),
         agentId: agent.id,
         agentName: agent.name,
-        agentRole: agent.role,
+        agentRole: `${agent.role} · ${chatRoleLabel(role)}`,
         round,
         content,
+        ...(imageUrl ? { imageUrl } : {}),
       }
       transcript.push(turn)
       emit({ type: 'turn_complete', turn })
@@ -373,11 +805,20 @@ export async function runBoardroom(
   }
 
   if (signal.aborted) return
-  const facilitator = input.agents.find((agent) => agent.id === input.facilitatorId)!
+  const synthesizer =
+    selectedSynthesizer ??
+    (input.synthesize === false
+      ? undefined
+      : input.agents.find((agent) => agent.id === input.facilitatorId))
+  if (!synthesizer) {
+    emit({ type: 'done' })
+    return
+  }
+
   emit({
     type: 'synthesis_start',
-    agentId: facilitator.id,
-    agentName: facilitator.name,
+    agentId: synthesizer.id,
+    agentName: synthesizer.name,
   })
 
   let synthesis: string
@@ -386,23 +827,58 @@ export async function runBoardroom(
     : ''
   try {
     synthesis = await complete(
-      facilitator,
-      `${buildSystemPrompt(facilitator)}\n\nYou are now the boardroom facilitator. Synthesize the entire discussion into a balanced, decision-ready conclusion. Do not invent consensus; name unresolved disagreements or uncertainty.`,
+      synthesizer,
+      `${buildSystemPrompt(synthesizer, 'synthesizer')}\n\nSynthesize the entire discussion into a balanced, decision-ready conclusion. Do not invent consensus; name unresolved disagreements or uncertainty.`,
       `Board task or latest user message:\n${input.task}${priorConversation}\n\nFull discussion:\n${formatTranscript(transcript)}\n\nWrite a concise synthesis with these headings: Conclusion, Key considerations, Recommended next steps. Attribute important viewpoints to the advisor who raised them.`,
       signal,
     )
   } catch (error) {
     if (signal.aborted) return
-    throw new Error(providerErrorMessage(facilitator.provider, error))
+    throw new Error(providerErrorMessage(synthesizer.provider, error))
   }
 
   emit({
     type: 'synthesis_complete',
-    agentId: facilitator.id,
-    agentName: facilitator.name,
+    agentId: synthesizer.id,
+    agentName: synthesizer.name,
     content: synthesis,
   })
   emit({ type: 'done' })
+}
+
+export function parseDirectorSelection(
+  output: string,
+  advisors: AgentConfig[],
+): AgentConfig | null {
+  const selectedId = output.trim()
+  return advisors.find((advisor) => advisor.id === selectedId) ?? null
+}
+
+export function parseOrchestratorSelection(
+  output: string,
+  candidates: AgentConfig[],
+): AgentConfig[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(output.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ''))
+  } catch {
+    return null
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length < 1 ||
+    parsed.length > 3 ||
+    parsed.some((id) => typeof id !== 'string')
+  ) {
+    return null
+  }
+
+  const ids = parsed.filter((id): id is string => typeof id === 'string')
+  if (ids.length !== parsed.length) return null
+  if (new Set(ids).size !== ids.length) return null
+  const selected = ids.map((id) => candidates.find((candidate) => candidate.id === id))
+  if (selected.some((agent) => agent === undefined)) return null
+  return selected.filter((agent): agent is AgentConfig => agent !== undefined)
 }
 
 function reportTypeLabel(type: BoardroomReportType): string {
@@ -433,15 +909,19 @@ export async function generateBoardroomReport(
   signal: AbortSignal,
 ): Promise<void> {
   const contributions: Array<{ agent: AgentConfig; content: string }> = []
-  for (const agent of input.agents) {
+  const contributors = input.agents.filter(
+    (agent) => input.agentRoles?.[agent.id] === 'advisor',
+  )
+  for (const agent of contributors) {
     if (signal.aborted) return
     emit({ type: 'section_start', agentId: agent.id, agentName: agent.name })
 
     let content: string
+    const role = input.agentRoles?.[agent.id] ?? 'advisor'
     try {
       content = await complete(
         agent,
-        `${buildSystemPrompt(agent)}\n\nYou are a subject-matter contributor to a professional ${reportTypeLabel(input.type)}. Write only the report sections where your expertise adds value.`,
+        `${buildSystemPrompt(agent, role)}\n\nYou are a subject-matter contributor to a professional ${reportTypeLabel(input.type)}. Write only the report sections where your expertise adds value.`,
         `Document title: ${input.title}
 Report type: ${reportTypeLabel(input.type)}
 
@@ -457,6 +937,7 @@ ${reportTypeGuidance(input.type)}
 Write one or more concise, titled sections from your perspective. Be specific and practical. Identify assumptions and missing information instead of inventing facts. Avoid repeating generic background or claiming agreement on behalf of other advisors.`,
         signal,
         1_500,
+        role,
       )
     } catch (error) {
       if (signal.aborted) return
@@ -468,7 +949,10 @@ Write one or more concise, titled sections from your perspective. Be specific an
   }
 
   if (signal.aborted) return
-  const facilitator = input.agents.find((agent) => agent.id === input.facilitatorId)!
+  const facilitator =
+    input.agents.find((agent) => agent.id === input.formatterId) ??
+    input.agents.find((agent) => agent.id === input.facilitatorId)!
+  const formatterRole: ChatAgentRole = 'report_formatter'
   emit({
     type: 'facilitator_start',
     agentId: facilitator.id,
@@ -486,7 +970,7 @@ Write one or more concise, titled sections from your perspective. Be specific an
   try {
     content = await complete(
       facilitator,
-      `${buildSystemPrompt(facilitator)}\n\nYou are the report editor and boardroom facilitator. Produce a complete, professional document from the advisor contributions. Keep role-specific expertise visible, reconcile differences transparently, and do not invent facts or consensus.`,
+      `${buildSystemPrompt(facilitator, formatterRole)}\n\nYou are the report editor${input.formatterId ? ' and designated report formatter' : ' and boardroom facilitator'}. Produce a complete, professional document from the advisor contributions. Follow the formatting and company-style rules in your agent profile. Preserve all facts and conclusions, keep role-specific expertise visible, reconcile differences transparently, and do not invent facts or consensus.`,
       `Document title: ${input.title}
 Report type: ${reportTypeLabel(input.type)}
 
@@ -505,6 +989,7 @@ ${advisorSections}
 Write the finished report in Markdown with a clear title, an executive summary, useful sections, and prioritized recommendations or next steps. Incorporate relevant advisor contributions, name the perspectives behind important findings, and clearly label assumptions or items that need confirmation.`,
       signal,
       4_000,
+      formatterRole,
     )
   } catch (error) {
     if (signal.aborted) return

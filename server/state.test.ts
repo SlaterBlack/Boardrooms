@@ -15,12 +15,15 @@ const agent = {
   id: 'strategy',
   name: 'Strategy',
   role: 'Market analyst',
+  defaultChatRole: 'advisor' as const,
+  modelCapabilities: {},
   provider: 'openai' as const,
   model: 'gpt-6.2-sol',
   knowledge: '',
   skills: '',
   instructions: '',
 }
+const formatter = { ...agent, id: 'formatter', name: 'Report formatter' }
 
 const meeting = {
   id: 'launch-review',
@@ -33,6 +36,8 @@ const meeting = {
   updatedAt: '2026-01-01T00:00:00.000Z',
   status: 'ready' as const,
   mode: 'discussion' as const,
+  chatType: 'informational' as const,
+  agentRoles: { strategy: 'advisor' as const },
   transcript: [],
   chatMessages: [],
   reports: [],
@@ -97,17 +102,29 @@ test('rejects invalid boardroom state patches', () => {
 
 test('validates chat messages and upgrades legacy meetings to structured discussions', () => {
   const legacy = parseBoardroomStatePatch({
-    meetings: [{ ...meeting, mode: undefined, chatMessages: undefined }],
+    meetings: [
+      { ...meeting, mode: undefined, agentRoles: undefined, chatMessages: undefined },
+    ],
   })
   assert.equal(legacy.meetings?.[0].mode, 'discussion')
+  assert.equal(legacy.meetings?.[0].chatType, 'informational')
+  assert.equal(legacy.meetings?.[0].agentRoles.strategy, 'advisor')
   assert.deepEqual(legacy.meetings?.[0].chatMessages, [])
   assert.deepEqual(legacy.meetings?.[0].reports, [])
+
+  const legacyChat = parseBoardroomStatePatch({
+    meetings: [
+      { ...meeting, mode: 'chat', chatType: undefined, agentRoles: undefined },
+    ],
+  })
+  assert.equal(legacyChat.meetings?.[0].chatType, 'document')
 
   const chat = parseBoardroomStatePatch({
     meetings: [
       {
         ...meeting,
         mode: 'chat',
+        agentRoles: { strategy: 'advisor' },
         chatMessages: [
           {
             id: 'user-1',
@@ -123,6 +140,7 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
             agentId: agent.id,
             agentName: agent.name,
             agentRole: agent.role,
+            imageUrl: 'https://images.magnific.com/upscaled.png',
           },
         ],
         reports: [
@@ -139,7 +157,29 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
   })
   assert.equal(chat.meetings?.[0].mode, 'chat')
   assert.equal(chat.meetings?.[0].chatMessages.length, 2)
+  assert.equal(
+    chat.meetings?.[0].chatMessages[1].imageUrl,
+    'https://images.magnific.com/upscaled.png',
+  )
   assert.equal(chat.meetings?.[0].reports[0].type, 'review')
+
+  const formattedChat = parseBoardroomStatePatch({
+    meetings: [
+      {
+        ...meeting,
+        mode: 'chat',
+        agents: [agent, formatter],
+        agentRoles: {
+          strategy: 'advisor',
+          formatter: 'report_formatter',
+        },
+      },
+    ],
+  })
+  assert.equal(
+    formattedChat.meetings?.[0].agentRoles.formatter,
+    'report_formatter',
+  )
 
   assert.throws(
     () =>
@@ -153,6 +193,25 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
         ],
       }),
     /Meetings contains an invalid entry/,
+  )
+  assert.throws(
+      () =>
+        parseBoardroomStatePatch({
+          meetings: [{ ...meeting, chatType: 'unknown' }],
+        }),
+      /Meetings contains an invalid entry/,
+  )
+  assert.throws(
+      () =>
+        parseBoardroomStatePatch({
+          meetings: [
+            {
+              ...meeting,
+              agentRoles: { strategy: 'director' },
+            },
+          ],
+        }),
+      /Meetings contains an invalid entry/,
   )
 })
 

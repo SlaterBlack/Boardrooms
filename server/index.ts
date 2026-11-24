@@ -23,6 +23,13 @@ import {
 } from './boardroom.ts'
 import { listProviderModels, ProviderModelsError } from './models.ts'
 import {
+  MagnificError,
+  MagnificInputError,
+  parseMagnificUpscaleInput,
+  upscaleWithMagnific,
+} from './magnific.ts'
+import { readGeneratedImage } from './generatedImages.ts'
+import {
   BoardroomStateInputError,
   importBoardroomState,
   parseBoardroomStatePatch,
@@ -48,6 +55,20 @@ if (!isLoopbackHost(host) && accessPassword.length < 16) {
 }
 
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
+const activeBoardroomRuns = new Map<string, number>()
+
+function trackBoardroomRun(meetingId: string): void {
+  activeBoardroomRuns.set(
+    meetingId,
+    (activeBoardroomRuns.get(meetingId) ?? 0) + 1,
+  )
+}
+
+function untrackBoardroomRun(meetingId: string): void {
+  const activeRuns = activeBoardroomRuns.get(meetingId) ?? 0
+  if (activeRuns <= 1) activeBoardroomRuns.delete(meetingId)
+  else activeBoardroomRuns.set(meetingId, activeRuns - 1)
+}
 
 function providerKeyName(provider: Provider): string {
   switch (provider) {
@@ -57,6 +78,8 @@ function providerKeyName(provider: Provider): string {
       return 'ANTHROPIC_API_KEY'
     case 'openrouter':
       return 'OPENROUTER_API_KEY'
+    case 'magnific':
+      return 'MAGNIFIC_API_KEY'
   }
 }
 
@@ -206,13 +229,86 @@ app.get('/api/providers', (_request, response) => {
     openai: Boolean(process.env.OPENAI_API_KEY?.trim()),
     anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
     openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+    magnific: Boolean(process.env.MAGNIFIC_API_KEY?.trim()),
   }
   response.json({ providers: availability })
 })
 
+app.get('/api/boardrooms/runs/:meetingId', (request, response) => {
+  const { meetingId } = request.params
+  if (!meetingId || meetingId.length > 80) {
+    response.status(400).json({ error: 'Meeting ID is invalid.' })
+    return
+  }
+  response
+    .set('Cache-Control', 'no-store')
+    .json({ active: (activeBoardroomRuns.get(meetingId) ?? 0) > 0 })
+})
+
+app.post('/api/boardrooms/images/upscale', async (request, response) => {
+  let input
+  try {
+    input = parseMagnificUpscaleInput(request.body)
+  } catch (error) {
+    if (error instanceof MagnificInputError) {
+      response.status(400).json({ error: error.message })
+      return
+    }
+    throw error
+  }
+
+  if (!process.env.MAGNIFIC_API_KEY?.trim()) {
+    response.status(503).json({
+      error: 'Configure MAGNIFIC_API_KEY on the Boardrooms server, then restart the service.',
+    })
+    return
+  }
+
+  const controller = new AbortController()
+  response.on('close', () => {
+    if (!response.writableEnded) controller.abort()
+  })
+
+  app.get('/api/boardrooms/images/generated/:file', async (request, response) => {
+    try {
+      const image = await readGeneratedImage(request.params.file)
+      if (!image) {
+        response.status(404).json({ error: 'Generated image not found.' })
+        return
+      }
+      response
+        .set('Cache-Control', 'private, max-age=86400')
+        .set('Content-Type', image.contentType)
+        .set('X-Content-Type-Options', 'nosniff')
+        .send(image.data)
+    } catch (error) {
+      console.error('Could not read a generated image.', error)
+      response.status(500).json({ error: 'Could not load the generated image.' })
+    }
+  })
+
+  try {
+    const imageUrl = await upscaleWithMagnific(input, controller.signal)
+    if (!response.destroyed) response.json({ imageUrl })
+  } catch (error) {
+    if (controller.signal.aborted || response.destroyed) return
+    if (error instanceof MagnificError) {
+      response.status(error.statusCode).json({ error: error.message })
+      return
+    }
+    console.error('Could not upscale image with Magnific.', error)
+    response.status(502).json({ error: 'Could not complete the Magnific image request.' })
+  }
+})
+
 app.get('/api/providers/:provider/models', async (request, response) => {
   const provider = request.params.provider
-  if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'openrouter') {
+  if (
+    provider !== 'openai' &&
+    provider !== 'anthropic' &&
+    provider !== 'openrouter' &&
+    provider !== 'magnific'
+  ) {
     response.status(400).json({ error: 'Unsupported provider.' })
     return
   }
@@ -244,7 +340,11 @@ app.post('/api/boardrooms/run', async (request, response) => {
   const missingProviders = [
     ...new Set(
       input.agents
-        .filter((agent) => !process.env[providerKeyName(agent.provider)]?.trim())
+        .filter(
+          (agent) =>
+            input.agentRoles?.[agent.id] !== 'image_processor' &&
+            !process.env[providerKeyName(agent.provider)]?.trim(),
+        )
         .map((agent) => agent.provider),
     ),
   ]
@@ -264,8 +364,19 @@ app.post('/api/boardrooms/run', async (request, response) => {
   })
 
   const controller = new AbortController()
+  const meetingId = input.meetingId
+  let released = false
+  if (meetingId) trackBoardroomRun(meetingId)
+  const releaseRun = () => {
+    if (!meetingId || released) return
+    released = true
+    untrackBoardroomRun(meetingId)
+  }
   response.on('close', () => {
-    if (!response.writableEnded) controller.abort()
+    if (!response.writableEnded) {
+      controller.abort()
+      releaseRun()
+    }
   })
 
   const emit = (event: BoardroomEvent) => {
@@ -281,6 +392,8 @@ app.post('/api/boardrooms/run', async (request, response) => {
       error instanceof Error ? error.message : 'The boardroom run failed.'
     emit({ type: 'error', message })
     response.end()
+  } finally {
+    releaseRun()
   }
 })
 

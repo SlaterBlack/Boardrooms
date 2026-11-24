@@ -1,5 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import type { AgentConfig, Provider, ProviderModel } from '../../shared/boardroom'
+import type {
+  AgentConfig,
+  ChatAgentRole,
+  Provider,
+  ProviderModel,
+} from '../../shared/boardroom'
+import { CHAT_AGENT_ROLES, isChatAgentRole } from '../../shared/chat'
 import { createId } from '../createId'
 import Modal from './Modal'
 
@@ -25,6 +31,35 @@ function defaultModel(provider: Provider): string {
       return 'claude-sonnet-5-5'
     case 'openrouter':
       return 'openai/gpt-4o-mini'
+    case 'magnific':
+      return 'mystic:realism'
+  }
+}
+
+function chatRoleLabel(role: ChatAgentRole): string {
+  switch (role) {
+    case 'advisor':
+      return 'Meeting Member'
+    case 'director':
+      return 'Orchestrator'
+    case 'researcher':
+      return 'Researcher'
+    case 'facilitator':
+      return 'Facilitator'
+    case 'critic':
+      return 'Critic'
+    case 'synthesizer':
+      return 'Synthesizer'
+    case 'image_processor':
+      return 'Image Processor'
+    case 'image_generator':
+      return 'Image Generator'
+    case 'image_analyser':
+      return 'Image Analyser'
+    case 'report_formatter':
+      return 'Document Formatter'
+    case 'executor':
+      return 'Executor'
   }
 }
 
@@ -37,8 +72,28 @@ function isProviderModel(value: unknown): value is ProviderModel {
     isRecord(value) &&
     typeof value.id === 'string' &&
     typeof value.name === 'string' &&
-    (value.isFree === undefined || typeof value.isFree === 'boolean')
+    (value.isFree === undefined || typeof value.isFree === 'boolean') &&
+    (value.supportsImageGeneration === undefined ||
+      typeof value.supportsImageGeneration === 'boolean') &&
+    (value.supportsImageProcessing === undefined ||
+      typeof value.supportsImageProcessing === 'boolean') &&
+    (value.supportsVision === undefined || typeof value.supportsVision === 'boolean') &&
+    (value.supportsWebSearch === undefined ||
+      typeof value.supportsWebSearch === 'boolean')
   )
+}
+
+function modelCapabilities(model: ProviderModel | undefined): AgentConfig['modelCapabilities'] {
+  return {
+    ...(model?.supportsImageGeneration
+      ? { supportsImageGeneration: true }
+      : {}),
+    ...(model?.supportsImageProcessing
+      ? { supportsImageProcessing: true }
+      : {}),
+    ...(model?.supportsVision ? { supportsVision: true } : {}),
+    ...(model?.supportsWebSearch ? { supportsWebSearch: true } : {}),
+  }
 }
 
 function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModalProps) {
@@ -47,8 +102,10 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
       id: createId(),
       name: '',
       role: '',
+      defaultChatRole: 'advisor',
       provider: 'openai',
       model: defaultModel('openai'),
+      modelCapabilities: {},
       knowledge: '',
       skills: '',
       instructions: '',
@@ -66,6 +123,9 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
     providerModelState.provider === draft.provider ? providerModelState.status : 'loading'
   const modelError =
     providerModelState.provider === draft.provider ? providerModelState.error : ''
+  const selectedModel = models.find((model) => model.id === draft.model)
+  const selectedCapabilities =
+    (selectedModel ? modelCapabilities(selectedModel) : draft.modelCapabilities) ?? {}
 
   useEffect(() => {
     const controller = new AbortController()
@@ -120,6 +180,10 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
       name: draft.name.trim(),
       role: draft.role.trim(),
       model: draft.model.trim(),
+      modelCapabilities:
+        models.find((model) => model.id === draft.model)
+          ? modelCapabilities(models.find((model) => model.id === draft.model))
+          : draft.modelCapabilities,
       knowledge: draft.knowledge.trim(),
       skills: draft.skills.trim(),
       instructions: draft.instructions.trim(),
@@ -156,24 +220,69 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
             <select
               onChange={(event) => {
                 const provider: Provider =
-                  event.target.value === 'anthropic'
-                    ? 'anthropic'
-                    : event.target.value === 'openrouter'
-                      ? 'openrouter'
-                      : 'openai'
-                update({ provider, model: defaultModel(provider) })
+                  event.target.value === 'anthropic' ||
+                  event.target.value === 'openrouter' ||
+                  event.target.value === 'magnific'
+                    ? event.target.value
+                    : 'openai'
+                update({
+                  provider,
+                  model: defaultModel(provider),
+                  modelCapabilities: {},
+                })
               }}
               value={draft.provider}
             >
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
               <option value="openrouter">OpenRouter</option>
+              <option value="magnific">Magnific (image roles)</option>
             </select>
+          </label>
+          <label className="modal-field">
+            Default boardroom role
+            <select
+              onChange={(event) => {
+                if (isChatAgentRole(event.target.value)) {
+                  update({ defaultChatRole: event.target.value })
+                }
+              }}
+              value={draft.defaultChatRole}
+            >
+              {CHAT_AGENT_ROLES.map((role) => {
+                const disabled =
+                  (draft.provider === 'magnific' &&
+                    role !== 'image_generator' &&
+                    role !== 'image_processor') ||
+                  (role === 'image_generator' &&
+                    !selectedCapabilities.supportsImageGeneration) ||
+                  (role === 'image_processor' &&
+                    (draft.provider !== 'magnific' ||
+                      !selectedCapabilities.supportsImageProcessing)) ||
+                  (role === 'image_analyser' && !selectedCapabilities.supportsVision) ||
+                  (role === 'researcher' && !selectedCapabilities.supportsWebSearch)
+                return (
+                  <option disabled={disabled} key={role} value={role}>
+                    {chatRoleLabel(role)}
+                  </option>
+                )
+              })}
+            </select>
+            <span className="field-hint">
+              This role is preselected whenever you add this agent to a boardroom, and can be overridden per chat.
+            </span>
           </label>
           <label className="modal-field">
             Model ID
             <select
-              onChange={(event) => update({ model: event.target.value })}
+              onChange={(event) =>
+                update({
+                  model: event.target.value,
+                  modelCapabilities: modelCapabilities(
+                    models.find((model) => model.id === event.target.value),
+                  ),
+                })
+              }
               required
               value={draft.model}
             >
