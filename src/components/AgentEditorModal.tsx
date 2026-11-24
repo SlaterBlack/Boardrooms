@@ -33,7 +33,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isProviderModel(value: unknown): value is ProviderModel {
-  return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string'
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    (value.isFree === undefined || typeof value.isFree === 'boolean')
+  )
 }
 
 function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModalProps) {
@@ -176,7 +181,12 @@ function AgentEditorModal({ agent, onClose, onSave, onDelete }: AgentEditorModal
                 <option value={draft.model}>Current model: {draft.model}</option>
               )}
               {models.map((model) => (
-                <option key={model.id} value={model.id}>
+                <option
+                  className={model.isFree ? 'free-model-option' : undefined}
+                  key={model.id}
+                  value={model.id}
+                >
+                  {model.isFree ? '[ FREE ] ' : ''}
                   {model.name === model.id ? model.id : `${model.name} (${model.id})`}
                 </option>
               ))}

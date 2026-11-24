@@ -2,8 +2,7 @@
 
 Boardrooms is an AI meeting hub. Configure advisors with different roles,
 providers, models, and instructions; bring one or more into a boardroom; and
-give them a task to discuss. The facilitator then synthesizes their discussion
-into a decision-ready conclusion.
+work through a structured discussion or an ongoing chat.
 
 ## Requirements
 
@@ -39,8 +38,8 @@ are made server-side.
 
 ## How a boardroom works
 
-- Use the **Meetings** tab to create meetings, add an agenda, and choose one to
-  five named agents from the roster.
+- Use the **Meetings** tab to create a structured meeting or ongoing chat, then
+  choose one to five named agents from the roster.
 - Use the **Agents** tab to add, edit, or delete agent profiles. Configure each
   agent's provider, model ID, perspective, knowledge, skills, and instructions.
 - OpenRouter agents use the OpenAI-compatible API. Enter the provider-prefixed
@@ -51,10 +50,27 @@ are made server-side.
   facilitator makes a final synthesis.
 - A run makes one provider request per advisor per round, plus one synthesis
   request. Provider usage may incur charges.
+- In an ongoing chat, send a message and each advisor responds before the
+  facilitator synthesizes the board's recommendation. Follow-up messages use
+  the preceding conversation for context. Each message makes one request per
+  advisor plus one synthesis request, so provider usage may incur charges.
+- Choose **Generate report** beneath a chat conclusion to create a scope
+  document, review document, or custom report. Each advisor drafts relevant
+  sections from their expertise and the facilitator assembles the final
+  document. Report generation makes one request per advisor plus one facilitator
+  request; downloading the saved PDF does not make another provider request.
 
-Agent profiles, meeting details, and transcripts are saved in that browser's
-local storage; the server does not persist them or synchronize them across
-devices. Meetings keep a snapshot of the agents selected when they are created.
+Agent profiles, meeting details, discussion transcripts, and chat messages are
+stored by the server in `.boardrooms-data/state.json`, so they are shared across
+signed-in browsers and devices. Generated reports are saved with their
+boardroom. This private data directory is excluded from Git. On first
+connection, existing browser data is imported into the server store. Editing an
+agent updates its settings in existing meetings; choose **Run again** to start
+a fresh structured discussion with those settings.
+
+OpenRouter's free model pricing does not bypass account usage or rate limits.
+Free model requests can still fail if the OpenRouter account's configured quota
+is exhausted.
 
 ## Production and system service
 
@@ -80,12 +96,18 @@ sudo systemctl enable --now boardrooms
 Check it with `systemctl status boardrooms` and
 `curl http://localhost:3001/api/health`. On the LAN, open
 `http://<server-lan-ip>:3001` and sign in with `BOARDROOMS_PASSWORD`. After
-updating code or `.env`, rebuild with `npm run build` and restart with
+updating code or `.env`, rebuild with `npm run build`, reinstall the unit if its
+permissions changed, and restart with
 `sudo systemctl restart boardrooms`.
 
 ## API
 
 - `GET /api/health` — server health.
+- `GET /api/state` — shared advisor profiles, meetings, and transcripts.
+- `POST /api/state/import` — one-time import of existing browser data.
+- `PUT /api/state` — save shared advisor and meeting data.
 - `GET /api/providers` — provider-key availability (never returns key values).
 - `POST /api/boardrooms/run` — streams boardroom progress as newline-delimited
   JSON events.
+- `POST /api/boardrooms/report` — streams advisor contributions and the completed
+  report as newline-delimited JSON events.

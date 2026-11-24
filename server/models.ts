@@ -35,7 +35,11 @@ export function normalizeProviderModels(models: ProviderModel[]): ProviderModel[
   for (const model of models) {
     const id = model.id.trim()
     if (!id || unique.has(id)) continue
-    unique.set(id, { id, name: model.name.trim() || id })
+    unique.set(id, {
+      id,
+      name: model.name.trim() || id,
+      ...(model.isFree === true ? { isFree: true } : {}),
+    })
   }
 
   return [...unique.values()].sort(
@@ -46,6 +50,21 @@ export function normalizeProviderModels(models: ProviderModel[]): ProviderModel[
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isZeroPrice(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value) && value === 0
+  if (typeof value !== 'string' || !value.trim()) return false
+  return Number(value) === 0
+}
+
+function isFreeOpenRouterPricing(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return (
+    isZeroPrice(value.prompt) &&
+    isZeroPrice(value.completion) &&
+    (value.request === undefined || value.request === null || isZeroPrice(value.request))
+  )
 }
 
 function upstreamStatus(error: unknown): number | undefined {
@@ -101,6 +120,7 @@ async function listOpenRouterModels(): Promise<ProviderModel[]> {
     return [{
       id: item.id,
       name: typeof item.name === 'string' ? item.name : item.id,
+      ...(isFreeOpenRouterPricing(item.pricing) ? { isFree: true } : {}),
     }]
   })
   return normalizeProviderModels(models).slice(0, MODEL_LIST_LIMIT)

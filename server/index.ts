@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type {
   BoardroomEvent,
+  BoardroomReportEvent,
   Provider,
   ProviderAvailability,
 } from '../shared/boardroom.ts'
@@ -13,8 +14,22 @@ import {
   hasValidSession,
   matchesAccessPassword,
 } from './auth.ts'
-import { BoardroomInputError, parseBoardroomInput, runBoardroom } from './boardroom.ts'
+import {
+  BoardroomInputError,
+  generateBoardroomReport,
+  parseBoardroomInput,
+  parseBoardroomReportInput,
+  runBoardroom,
+} from './boardroom.ts'
 import { listProviderModels, ProviderModelsError } from './models.ts'
+import {
+  BoardroomStateInputError,
+  importBoardroomState,
+  parseBoardroomStatePatch,
+  recoverInterruptedMeetings,
+  readBoardroomState,
+  updateBoardroomState,
+} from './state.ts'
 
 const app = express()
 const port = Number(process.env.PORT ?? 3001)
@@ -45,7 +60,7 @@ function providerKeyName(provider: Provider): string {
   }
 }
 
-app.use(express.json({ limit: '64kb' }))
+app.use(express.json({ limit: '10mb' }))
 
 app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok', service: 'boardrooms-api' })
@@ -122,6 +137,68 @@ app.use('/api', (request, response, next) => {
     return
   }
   response.status(401).json({ error: 'Sign in to access this boardroom.' })
+})
+
+app.get('/api/state', async (request, response) => {
+  try {
+    const state = await readBoardroomState()
+    response.set('Cache-Control', 'no-store')
+    if (
+      state &&
+      request.query.since === String(state.revision)
+    ) {
+      response.status(204).end()
+      return
+    }
+
+    response.json({
+      initialized: state !== null,
+      revision: state?.revision ?? 0,
+      agents: state?.agents ?? [],
+      meetings: state?.meetings ?? [],
+    })
+  } catch (error) {
+    console.error('Could not read shared Boardrooms data.', error)
+    response.status(500).json({ error: 'Could not load shared Boardrooms data.' })
+  }
+})
+
+app.post('/api/state/import', async (request, response) => {
+  try {
+    const patch = parseBoardroomStatePatch(request.body)
+    if (patch.agents === undefined || patch.meetings === undefined) {
+      response.status(400).json({ error: 'Import requires both agents and meetings.' })
+      return
+    }
+
+    const state = await importBoardroomState({
+      agents: patch.agents,
+      meetings: patch.meetings,
+    })
+    response.set('Cache-Control', 'no-store').json({ ...state, initialized: true })
+  } catch (error) {
+    if (error instanceof BoardroomStateInputError) {
+      response.status(400).json({ error: error.message })
+      return
+    }
+    console.error('Could not import shared Boardrooms data.', error)
+    response.status(500).json({ error: 'Could not save shared Boardrooms data.' })
+  }
+})
+
+app.put('/api/state', async (request, response) => {
+  try {
+    const patch = parseBoardroomStatePatch(request.body)
+    const state = await updateBoardroomState(patch)
+    response.set('Cache-Control', 'no-store').json({ ...state, initialized: true })
+  } catch (error) {
+    if (error instanceof BoardroomStateInputError) {
+      response.status(400).json({ error: error.message })
+      return
+    }
+    console.error('Could not save shared Boardrooms data.', error)
+    response.status(500).json({ error: 'Could not save shared Boardrooms data.' })
+  }
 })
 
 app.get('/api/providers', (_request, response) => {
@@ -207,6 +284,61 @@ app.post('/api/boardrooms/run', async (request, response) => {
   }
 })
 
+app.post('/api/boardrooms/report', async (request, response) => {
+  let input
+  try {
+    input = parseBoardroomReportInput(request.body)
+  } catch (error) {
+    if (error instanceof BoardroomInputError) {
+      response.status(400).json({ error: error.message })
+      return
+    }
+    throw error
+  }
+
+  const missingProviders = [
+    ...new Set(
+      input.agents
+        .filter((agent) => !process.env[providerKeyName(agent.provider)]?.trim())
+        .map((agent) => agent.provider),
+    ),
+  ]
+  if (missingProviders.length > 0) {
+    const instructions = missingProviders.map(providerKeyName).join(' and ')
+    response.status(503).json({
+      error: `Configure ${instructions} in the server environment, then restart the service.`,
+    })
+    return
+  }
+
+  response.status(200).set({
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Content-Type-Options': 'nosniff',
+  })
+
+  const controller = new AbortController()
+  response.on('close', () => {
+    if (!response.writableEnded) controller.abort()
+  })
+
+  const emit = (event: BoardroomReportEvent) => {
+    if (!response.destroyed) response.write(`${JSON.stringify(event)}\n`)
+  }
+
+  try {
+    await generateBoardroomReport(input, emit, controller.signal)
+    if (!response.writableEnded) response.end()
+  } catch (error) {
+    if (controller.signal.aborted || response.destroyed) return
+    const message =
+      error instanceof Error ? error.message : 'The boardroom report failed.'
+    emit({ type: 'error', message })
+    response.end()
+  }
+})
+
 app.use(express.static(clientBuildDirectory))
 
 app.get('/{*path}', (_request, response, next) => {
@@ -214,6 +346,8 @@ app.get('/{*path}', (_request, response, next) => {
     if (error) next(error)
   })
 })
+
+await recoverInterruptedMeetings()
 
 app.listen(port, host, () => {
   console.log(`Boardrooms server listening on http://${host}:${port}`)

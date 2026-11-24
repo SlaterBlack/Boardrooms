@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type {
   AgentConfig,
+  BoardroomChatMessage,
+  BoardroomReport,
   Meeting,
+  MeetingMode,
   MeetingStatus,
   Provider,
   ProviderAvailability,
@@ -18,6 +21,7 @@ const AGENT_STORAGE_KEY = 'boardrooms.agents'
 const MEETING_STORAGE_KEY = 'boardrooms.meetings'
 const LEGACY_AGENT_STORAGE_KEY = 'boardmeetings.agents'
 const LEGACY_MEETING_STORAGE_KEY = 'boardmeetings.meetings'
+const SERVER_IMPORT_STORAGE_KEY = 'boardrooms.serverImport.v1'
 
 const DEFAULT_AGENTS: AgentConfig[] = [
   {
@@ -45,6 +49,13 @@ const DEFAULT_AGENTS: AgentConfig[] = [
 type ProviderState = 'checking' | 'connected' | 'disconnected'
 type AuthState = 'checking' | 'authenticated' | 'unauthenticated' | 'unavailable'
 type Tab = 'meetings' | 'agents'
+
+interface SharedBoardroomState {
+  initialized: boolean
+  revision: number
+  agents: AgentConfig[]
+  meetings: Meeting[]
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -82,7 +93,7 @@ function normalizeAgent(value: unknown): AgentConfig | null {
   }
 }
 
-function normalizeMeeting(value: unknown): Meeting | null {
+function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | null {
   if (
     !isRecord(value) ||
     typeof value.id !== 'string' ||
@@ -113,12 +124,47 @@ function normalizeMeeting(value: unknown): Meeting | null {
           typeof turn.content === 'string',
       )
     : []
-  const wasRunning = value.status === 'running'
+  const mode = value.mode === undefined ? 'discussion' : value.mode
+  if (mode !== 'discussion' && mode !== 'chat') return null
+  const rawChatMessages =
+    value.chatMessages === undefined ? [] : value.chatMessages
+  if (!Array.isArray(rawChatMessages)) return null
+  const chatMessages = rawChatMessages.filter(
+    (message): message is BoardroomChatMessage =>
+      isRecord(message) &&
+      typeof message.id === 'string' &&
+      (message.role === 'user' ||
+        message.role === 'agent' ||
+        message.role === 'facilitator') &&
+      typeof message.content === 'string' &&
+      typeof message.createdAt === 'string' &&
+      (message.agentId === undefined || typeof message.agentId === 'string') &&
+      (message.agentName === undefined || typeof message.agentName === 'string') &&
+      (message.agentRole === undefined || typeof message.agentRole === 'string') &&
+      (message.role === 'user' ||
+        (typeof message.agentId === 'string' &&
+          typeof message.agentName === 'string')),
+  )
+  const rawReports = value.reports === undefined ? [] : value.reports
+  if (!Array.isArray(rawReports)) return null
+  const reports = rawReports.filter(
+    (report): report is BoardroomReport =>
+      isRecord(report) &&
+      typeof report.id === 'string' &&
+      typeof report.title === 'string' &&
+      (report.type === 'scope' ||
+        report.type === 'review' ||
+        report.type === 'custom') &&
+      typeof report.content === 'string' &&
+      typeof report.createdAt === 'string',
+  )
+  const wasRunning = interruptRunning && value.status === 'running'
 
   return {
     id: value.id,
     name: value.name,
     task: value.task,
+    mode: mode as MeetingMode,
     agents: agents.filter((agent): agent is AgentConfig => agent !== null),
     facilitatorId: value.facilitatorId,
     rounds: value.rounds,
@@ -126,10 +172,38 @@ function normalizeMeeting(value: unknown): Meeting | null {
     updatedAt: value.updatedAt,
     status: wasRunning ? 'interrupted' : (value.status as MeetingStatus),
     transcript,
+    chatMessages,
+    reports,
     synthesis: typeof value.synthesis === 'string' ? value.synthesis : '',
     error: wasRunning
       ? 'This meeting was interrupted when the page closed.'
       : (typeof value.error === 'string' ? value.error : ''),
+  }
+}
+
+function normalizeSharedBoardroomState(value: unknown): SharedBoardroomState {
+  if (
+    !isRecord(value) ||
+    typeof value.initialized !== 'boolean' ||
+    typeof value.revision !== 'number' ||
+    !Number.isInteger(value.revision) ||
+    !Array.isArray(value.agents) ||
+    !Array.isArray(value.meetings)
+  ) {
+    throw new Error('The shared Boardrooms data response was invalid.')
+  }
+
+  const agents = value.agents.map(normalizeAgent)
+  const meetings = value.meetings.map((meeting) => normalizeMeeting(meeting, false))
+  if (agents.some((agent) => agent === null) || meetings.some((meeting) => meeting === null)) {
+    throw new Error('The shared Boardrooms data contains an invalid entry.')
+  }
+
+  return {
+    initialized: value.initialized,
+    revision: value.revision,
+    agents: agents.filter((agent): agent is AgentConfig => agent !== null),
+    meetings: meetings.filter((meeting): meeting is Meeting => meeting !== null),
   }
 }
 
@@ -161,13 +235,56 @@ function loadMeetings(): Meeting[] {
     )
     if (Array.isArray(stored)) {
       return stored
-        .map(normalizeMeeting)
+        .map((meeting) => normalizeMeeting(meeting))
         .filter((meeting): meeting is Meeting => meeting !== null)
     }
   } catch {
     return []
   }
   return []
+}
+
+async function fetchSharedBoardroomState(
+  revision?: number,
+  signal?: AbortSignal,
+): Promise<SharedBoardroomState | null> {
+  const query = revision === undefined ? '' : `?since=${revision}`
+  const response = await fetch(`/api/state${query}`, { cache: 'no-store', signal })
+  if (response.status === 204) return null
+  if (!response.ok) {
+    throw new Error(`Shared Boardrooms data returned ${response.status}.`)
+  }
+  return normalizeSharedBoardroomState(await response.json())
+}
+
+async function loadSharedBoardroomState(signal?: AbortSignal): Promise<SharedBoardroomState> {
+  let state = await fetchSharedBoardroomState(undefined, signal)
+  if (!state) throw new Error('The server did not return shared Boardrooms data.')
+
+  const migrationComplete = localStorage.getItem(SERVER_IMPORT_STORAGE_KEY) === 'true'
+  const hasLocalBoardroomData = [
+    AGENT_STORAGE_KEY,
+    MEETING_STORAGE_KEY,
+    LEGACY_AGENT_STORAGE_KEY,
+    LEGACY_MEETING_STORAGE_KEY,
+  ].some((key) => localStorage.getItem(key) !== null)
+  const needsImport = !state.initialized || (!migrationComplete && hasLocalBoardroomData)
+  if (needsImport) {
+    const response = await fetch('/api/state/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agents: loadAgents(), meetings: loadMeetings() }),
+      signal,
+    })
+    if (!response.ok) {
+      throw new Error(`Could not import this browser's boardroom data (${response.status}).`)
+    }
+    state = normalizeSharedBoardroomState(await response.json())
+  }
+  if (!migrationComplete) {
+    localStorage.setItem(SERVER_IMPORT_STORAGE_KEY, 'true')
+  }
+  return state
 }
 
 async function readProviderAvailability(signal?: AbortSignal): Promise<ProviderAvailability> {
@@ -232,7 +349,12 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('meetings')
   const [agents, setAgents] = useState<AgentConfig[]>(loadAgents)
   const [meetings, setMeetings] = useState<Meeting[]>(loadMeetings)
+  const agentsRef = useRef(agents)
   const meetingsRef = useRef(meetings)
+  const stateRevisionRef = useRef(0)
+  const stateSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const pendingStateSavesRef = useRef(0)
+  const unsavedStateRef = useRef(false)
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderAvailability | null>(null)
   const [providerState, setProviderState] = useState<ProviderState>('checking')
@@ -241,6 +363,14 @@ function App() {
   const [showAgentModal, setShowAgentModal] = useState(false)
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null)
   const [showMeetingModal, setShowMeetingModal] = useState(false)
+
+  function applySharedState(state: SharedBoardroomState) {
+    stateRevisionRef.current = state.revision
+    agentsRef.current = state.agents
+    meetingsRef.current = state.meetings
+    setAgents(state.agents)
+    setMeetings(state.meetings)
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -254,9 +384,14 @@ function App() {
         }
         if (!response.ok) throw new Error(`Sign-in status returned ${response.status}`)
 
-        setAuthState('authenticated')
-        setProviders(await readProviderAvailability(controller.signal))
+        const [availability, sharedState] = await Promise.all([
+          readProviderAvailability(controller.signal),
+          loadSharedBoardroomState(controller.signal),
+        ])
+        applySharedState(sharedState)
+        setProviders(availability)
         setProviderState('connected')
+        setAuthState('authenticated')
       } catch (requestError) {
         if (requestError instanceof DOMException && requestError.name === 'AbortError') return
         setAuthState('unavailable')
@@ -271,25 +406,115 @@ function App() {
     return () => controller.abort()
   }, [])
 
-  function persistAgents(updated: AgentConfig[]) {
-    setAgents(updated)
-    try {
-      localStorage.setItem(AGENT_STORAGE_KEY, JSON.stringify(updated))
-      setStorageError('')
-    } catch {
-      setStorageError('Agent settings could not be saved in this browser.')
+  useEffect(() => {
+    if (authState !== 'authenticated') return
+
+    const controller = new AbortController()
+    let syncing = false
+
+    async function syncSharedState() {
+      if (
+        syncing ||
+        pendingStateSavesRef.current > 0 ||
+        unsavedStateRef.current
+      ) {
+        return
+      }
+
+      syncing = true
+      try {
+        const state = await fetchSharedBoardroomState(
+          stateRevisionRef.current,
+          controller.signal,
+        )
+        if (state && state.revision > stateRevisionRef.current) {
+          applySharedState(state)
+        }
+        setStorageError('')
+      } catch (requestError) {
+        if (controller.signal.aborted) return
+        setStorageError(
+          requestError instanceof Error
+            ? requestError.message
+            : 'Could not sync shared Boardrooms data.',
+        )
+      } finally {
+        syncing = false
+      }
     }
+
+    const interval = window.setInterval(() => void syncSharedState(), 3_000)
+    window.addEventListener('focus', syncSharedState)
+    return () => {
+      controller.abort()
+      window.clearInterval(interval)
+      window.removeEventListener('focus', syncSharedState)
+    }
+  }, [authState])
+
+  function saveSharedState(patch: { agents?: AgentConfig[]; meetings?: Meeting[] }) {
+    pendingStateSavesRef.current += 1
+    unsavedStateRef.current = true
+
+    const request = stateSaveQueueRef.current
+      .then(async () => {
+        const response = await fetch('/api/state', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        })
+        const result: unknown = await response.json()
+        if (!response.ok) {
+          throw new Error(
+            isRecord(result) && typeof result.error === 'string'
+              ? result.error
+              : `Saving shared Boardrooms data returned ${response.status}.`,
+          )
+        }
+
+        const state = normalizeSharedBoardroomState(result)
+        if (pendingStateSavesRef.current === 1) {
+          applySharedState(state)
+          unsavedStateRef.current = false
+          setStorageError('')
+        }
+      })
+      .catch((requestError: unknown) => {
+        unsavedStateRef.current = true
+        setStorageError(
+          requestError instanceof Error
+            ? requestError.message
+            : 'Could not save shared Boardrooms data.',
+        )
+      })
+      .finally(() => {
+        pendingStateSavesRef.current -= 1
+      })
+
+    stateSaveQueueRef.current = request
+  }
+
+  function persistAgents(updated: AgentConfig[]) {
+    agentsRef.current = updated
+    setAgents(updated)
+    saveSharedState({ agents: updated })
   }
 
   function persistMeetings(updated: Meeting[]) {
     meetingsRef.current = updated
     setMeetings(updated)
-    try {
-      localStorage.setItem(MEETING_STORAGE_KEY, JSON.stringify(updated))
-      setStorageError('')
-    } catch {
-      setStorageError('Meeting details could not be saved in this browser.')
-    }
+    saveSharedState({ meetings: updated })
+  }
+
+  function persistAgentsAndMeetings(
+    updatedAgents: AgentConfig[],
+    updatedMeetings: Meeting[],
+  ) {
+    agentsRef.current = updatedAgents
+    meetingsRef.current = updatedMeetings
+    setAgents(updatedAgents)
+    setMeetings(updatedMeetings)
+    saveSharedState({ agents: updatedAgents, meetings: updatedMeetings })
   }
 
   function saveAgent(agent: AgentConfig) {
@@ -297,7 +522,26 @@ function App() {
     const updated = exists
       ? agents.map((current) => (current.id === agent.id ? agent : current))
       : [...agents, agent]
-    persistAgents(updated)
+    let updatedMeetings = false
+    const syncedMeetings = meetingsRef.current.map((meeting) => {
+      if (!meeting.agents.some((meetingAgent) => meetingAgent.id === agent.id)) {
+        return meeting
+      }
+
+      updatedMeetings = true
+      return {
+        ...meeting,
+        agents: meeting.agents.map((meetingAgent) =>
+          meetingAgent.id === agent.id ? agent : meetingAgent,
+        ),
+        updatedAt: new Date().toISOString(),
+      }
+    })
+    if (updatedMeetings) {
+      persistAgentsAndMeetings(updated, syncedMeetings)
+    } else {
+      persistAgents(updated)
+    }
     setShowAgentModal(false)
     setEditingAgent(null)
   }
@@ -317,11 +561,14 @@ function App() {
     const meeting: Meeting = {
       id: createId(),
       ...details,
+      task: details.task.trim() || 'Ongoing boardroom chat',
       agents: details.agents.map((agent) => ({ ...agent })),
       createdAt: now,
       updatedAt: now,
       status: 'ready',
       transcript: [],
+      chatMessages: [],
+      reports: [],
       synthesis: '',
       error: '',
     }
@@ -357,10 +604,15 @@ function App() {
       }
 
       setLoginPassword('')
-      setAuthState('authenticated')
-      setProviders(await readProviderAvailability())
+      const [availability, sharedState] = await Promise.all([
+        readProviderAvailability(),
+        loadSharedBoardroomState(),
+      ])
+      applySharedState(sharedState)
+      setProviders(availability)
       setProviderState('connected')
       setConnectionError('')
+      setAuthState('authenticated')
     } catch (requestError) {
       setAuthError(
         requestError instanceof Error ? requestError.message : 'Could not sign in.',
@@ -383,8 +635,12 @@ function App() {
   }
 
   const activeMeeting = meetings.find((meeting) => meeting.id === activeMeetingId)
-  const activeMeetings = meetings.filter((meeting) => meeting.status !== 'completed')
-  const completedMeetings = meetings.filter((meeting) => meeting.status === 'completed')
+  const activeMeetings = meetings.filter(
+    (meeting) => meeting.mode === 'chat' || meeting.status !== 'completed',
+  )
+  const completedMeetings = meetings.filter(
+    (meeting) => meeting.mode !== 'chat' && meeting.status === 'completed',
+  )
 
   if (authState !== 'authenticated') {
     return (
@@ -492,7 +748,7 @@ function App() {
                 <p className="eyebrow">YOUR AI MEETING HUB</p>
                 <h1 id="meetings-title">Meetings</h1>
                 <p className="page-description">
-                  Bring your agents together around a task and keep each discussion in one place.
+                  Create a structured discussion or an ongoing chat with your advisors.
                 </p>
               </div>
               <button
@@ -500,7 +756,7 @@ function App() {
                 onClick={() => setShowMeetingModal(true)}
                 type="button"
               >
-                <span aria-hidden="true">+</span> Create meeting
+                <span aria-hidden="true">+</span> Create boardroom
               </button>
             </div>
 
@@ -543,13 +799,13 @@ function App() {
                   <div className="empty-state">
                     <span className="empty-state-icon" aria-hidden="true">✳</span>
                     <h2>Your boardroom starts here</h2>
-                    <p>Create a meeting, add an agenda, and choose which agents should join.</p>
+                    <p>Create a discussion or chat, then choose which agents should join.</p>
                     <button
                       className="primary-button"
                       onClick={() => setShowMeetingModal(true)}
                       type="button"
                     >
-                      Create your first meeting
+                      Create your first boardroom
                     </button>
                   </div>
                 )}
@@ -610,7 +866,7 @@ function App() {
               </div>
             )}
             <p className="agent-library-note">
-              Meeting participants keep a snapshot of their agent settings. Changes apply to new meetings.
+              Saving agent edits updates their settings in existing meetings. Run a meeting again to use the updated settings.
             </p>
           </section>
         )}
@@ -618,7 +874,7 @@ function App() {
 
       <footer className="page-footer">
         <span>Thoughtful perspectives, brought together.</span>
-        <span>Agent profiles and meetings are saved in this browser.</span>
+        <span>Agent profiles and meetings sync across Boardrooms tabs and devices.</span>
       </footer>
 
       {showAgentModal && (
@@ -669,8 +925,13 @@ function MeetingSection({ meetings, title, onOpen }: MeetingSectionProps) {
           >
             <div className="meeting-card-top">
               <span className={`meeting-status status-${meeting.status}`}>
-                {meetingStatusLabel(meeting.status)}
+                {meeting.mode === 'chat'
+                  ? meeting.status === 'running'
+                    ? 'Responding'
+                    : 'Chat open'
+                  : meetingStatusLabel(meeting.status)}
               </span>
+              {meeting.mode === 'chat' && <span className="meeting-mode-badge">CHAT</span>}
               <span className="meeting-date">{formatDate(meeting.updatedAt)}</span>
             </div>
             <h3>{meeting.name}</h3>

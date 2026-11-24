@@ -1,5 +1,7 @@
 import type {
   BoardroomEvent,
+  BoardroomReportEvent,
+  BoardroomReportInput,
   BoardroomRunInput,
   BoardroomTurn,
 } from '../shared/boardroom'
@@ -86,6 +88,43 @@ function readEvent(value: unknown): BoardroomEvent {
   throw new Error('Received an invalid event from the boardroom.')
 }
 
+function readReportEvent(value: unknown): BoardroomReportEvent {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    throw new Error('Received an invalid event while generating the report.')
+  }
+  if (
+    (value.type === 'section_start' || value.type === 'section_complete') &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string'
+  ) {
+    return {
+      type: value.type,
+      agentId: value.agentId,
+      agentName: value.agentName,
+    }
+  }
+  if (
+    value.type === 'facilitator_start' &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string'
+  ) {
+    return {
+      type: value.type,
+      agentId: value.agentId,
+      agentName: value.agentName,
+    }
+  }
+  if (value.type === 'report_complete' && typeof value.content === 'string') {
+    return { type: value.type, content: value.content }
+  }
+  if (value.type === 'error' && typeof value.message === 'string') {
+    return { type: value.type, message: value.message }
+  }
+  if (value.type === 'done') return { type: value.type }
+
+  throw new Error('Received an invalid event while generating the report.')
+}
+
 async function responseError(response: Response): Promise<string> {
   const result: unknown = await response.json().catch(() => null)
   if (isRecord(result) && typeof result.error === 'string') return result.error
@@ -113,6 +152,40 @@ export async function streamBoardroom(
 
   function processLine(line: string) {
     if (line.trim()) onEvent(readEvent(JSON.parse(line) as unknown))
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    lines.forEach(processLine)
+    if (done) break
+  }
+  processLine(buffer)
+}
+
+export async function streamBoardroomReport(
+  input: BoardroomReportInput,
+  signal: AbortSignal,
+  onEvent: (event: BoardroomReportEvent) => void,
+): Promise<void> {
+  const response = await fetch('/api/boardrooms/report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+    signal,
+  })
+
+  if (!response.ok) throw new Error(await responseError(response))
+  if (!response.body) throw new Error('The boardroom report stream is unavailable.')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  function processLine(line: string) {
+    if (line.trim()) onEvent(readReportEvent(JSON.parse(line) as unknown))
   }
 
   while (true) {

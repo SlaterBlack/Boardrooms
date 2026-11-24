@@ -1,10 +1,11 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import type { AgentConfig } from '../../shared/boardroom'
+import type { AgentConfig, MeetingMode } from '../../shared/boardroom'
 import Modal from './Modal'
 
 export interface NewMeetingDetails {
   name: string
   task: string
+  mode: MeetingMode
   agents: AgentConfig[]
   facilitatorId: string
   rounds: number
@@ -30,6 +31,7 @@ function providerLabel(provider: AgentConfig['provider']): string {
 function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalProps) {
   const [name, setName] = useState('')
   const [task, setTask] = useState('')
+  const [mode, setMode] = useState<MeetingMode>('discussion')
   const [selectedIds, setSelectedIds] = useState(() =>
     agents.slice(0, 5).map((agent) => agent.id),
   )
@@ -43,7 +45,10 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
   const activeFacilitatorId = selectedAgents.some((agent) => agent.id === facilitatorId)
     ? facilitatorId
     : (selectedAgents[0]?.id ?? '')
-  const canCreate = name.trim().length > 0 && task.trim().length > 0 && selectedAgents.length > 0
+  const canCreate =
+    name.trim().length > 0 &&
+    (mode === 'chat' || task.trim().length > 0) &&
+    selectedAgents.length > 0
 
   function toggleAgent(id: string) {
     if (selectedIds.includes(id)) {
@@ -61,10 +66,17 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
 
   function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!name.trim() || !task.trim() || selectedAgents.length === 0) return
+    if (
+      !name.trim() ||
+      (mode === 'discussion' && !task.trim()) ||
+      selectedAgents.length === 0
+    ) {
+      return
+    }
     onCreate({
       name: name.trim(),
       task: task.trim(),
+      mode,
       agents: selectedAgents,
       facilitatorId: activeFacilitatorId,
       rounds,
@@ -72,7 +84,7 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
   }
 
   return (
-    <Modal title="Create a meeting" onClose={onClose}>
+    <Modal title="Create a boardroom" onClose={onClose}>
       <form className="modal-form" onSubmit={create}>
         <label className="modal-field">
           Meeting name
@@ -86,12 +98,28 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
           />
         </label>
         <label className="modal-field">
-          Task or agenda
+          Boardroom type
+          <select
+            onChange={(event) =>
+              setMode(event.target.value === 'chat' ? 'chat' : 'discussion')
+            }
+            value={mode}
+          >
+            <option value="discussion">Structured meeting</option>
+            <option value="chat">Ongoing chat</option>
+          </select>
+        </label>
+        <label className="modal-field">
+          {mode === 'chat' ? 'Boardroom context (optional)' : 'Task or agenda'}
           <textarea
             maxLength={8_000}
             onChange={(event) => setTask(event.target.value)}
-            placeholder="What question or decision should the agents discuss?"
-            required
+            placeholder={
+              mode === 'chat'
+                ? 'Add background to help advisors understand this boardroom.'
+                : 'What question or decision should the agents discuss?'
+            }
+            required={mode === 'discussion'}
             rows={4}
             value={task}
           />
@@ -127,14 +155,16 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
         {selectionError && <p className="form-error" role="alert">{selectionError}</p>}
 
         <div className="form-grid meeting-options">
-          <label className="modal-field">
-            Discussion rounds
-            <select onChange={(event) => setRounds(Number(event.target.value))} value={rounds}>
-              <option value={1}>1 round</option>
-              <option value={2}>2 rounds</option>
-              <option value={3}>3 rounds</option>
-            </select>
-          </label>
+          {mode === 'discussion' && (
+            <label className="modal-field">
+              Discussion rounds
+              <select onChange={(event) => setRounds(Number(event.target.value))} value={rounds}>
+                <option value={1}>1 round</option>
+                <option value={2}>2 rounds</option>
+                <option value={3}>3 rounds</option>
+              </select>
+            </label>
+          )}
           <label className="modal-field">
             Facilitator
             <select
@@ -149,7 +179,7 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
           </label>
         </div>
         <p className="field-hint">
-          Agent settings are copied into the meeting. Later edits apply to new meetings.
+          Saving agent edits updates their settings in existing meetings. Run a meeting again to use the updated settings.
         </p>
         <div className="modal-actions">
           <span className="meeting-selection-count">
@@ -164,7 +194,7 @@ function MeetingEditorModal({ agents, onClose, onCreate }: MeetingEditorModalPro
               disabled={!canCreate}
               type="submit"
             >
-              Create meeting
+              Create boardroom
             </button>
           </div>
         </div>
