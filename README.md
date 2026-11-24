@@ -1,6 +1,6 @@
-# Boardrooms
+# DiscussIt
 
-Boardrooms is an AI chat hub. Configure advisors with different roles,
+DiscussIt is an AI chat hub. Configure advisors with different roles,
 providers, models, and instructions; bring one or more into a boardroom; and
 work through an ongoing chat or build a report together.
 
@@ -22,7 +22,7 @@ chmod 600 .env
 Set any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` in
 `.env`, and set `BOARDROOMS_PASSWORD` to a unique password of at least 16
 characters for network sign-in. Set `MAGNIFIC_API_KEY` to enable the Magnific
-image processor. Provider keys stay on the server and are never sent to the
+image processor. Provider keys stay on the DiscussIt server and are never sent to the
 browser. Do not commit `.env`. If `.env` already exists, edit it rather than
 replacing it.
 

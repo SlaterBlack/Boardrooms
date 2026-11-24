@@ -181,8 +181,8 @@ app.get('/api/state', async (request, response) => {
       meetings: state?.meetings ?? [],
     })
   } catch (error) {
-    console.error('Could not read shared Boardrooms data.', error)
-    response.status(500).json({ error: 'Could not load shared Boardrooms data.' })
+    console.error('Could not read shared DiscussIt data.', error)
+    response.status(500).json({ error: 'Could not load shared DiscussIt data.' })
   }
 })
 
@@ -204,8 +204,8 @@ app.post('/api/state/import', async (request, response) => {
       response.status(400).json({ error: error.message })
       return
     }
-    console.error('Could not import shared Boardrooms data.', error)
-    response.status(500).json({ error: 'Could not save shared Boardrooms data.' })
+    console.error('Could not import shared DiscussIt data.', error)
+    response.status(500).json({ error: 'Could not save shared DiscussIt data.' })
   }
 })
 
@@ -219,8 +219,8 @@ app.put('/api/state', async (request, response) => {
       response.status(400).json({ error: error.message })
       return
     }
-    console.error('Could not save shared Boardrooms data.', error)
-    response.status(500).json({ error: 'Could not save shared Boardrooms data.' })
+    console.error('Could not save shared DiscussIt data.', error)
+    response.status(500).json({ error: 'Could not save shared DiscussIt data.' })
   }
 })
 
@@ -259,7 +259,7 @@ app.post('/api/boardrooms/images/upscale', async (request, response) => {
 
   if (!process.env.MAGNIFIC_API_KEY?.trim()) {
     response.status(503).json({
-      error: 'Configure MAGNIFIC_API_KEY on the Boardrooms server, then restart the service.',
+      error: 'Configure MAGNIFIC_API_KEY on the DiscussIt server, then restart the service.',
     })
     return
   }
@@ -463,5 +463,5 @@ app.get('/{*path}', (_request, response, next) => {
 await recoverInterruptedMeetings()
 
 app.listen(port, host, () => {
-  console.log(`Boardrooms server listening on http://${host}:${port}`)
+  console.log(`DiscussIt server listening on http://${host}:${port}`)
 })

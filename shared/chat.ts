@@ -22,7 +22,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export interface MentionedAdvisor {
+export interface MentionedAgent {
   agent: AgentConfig
   prompt: string
 }
@@ -112,49 +112,51 @@ export function normalizeModelCapabilities(value: unknown): ModelCapabilities | 
   )
 }
 
-function stripMentionRemainder(message: string, offset: number): string {
+function removeMention(
+  message: string,
+  start: number,
+  end: number,
+): string {
   return (
-    message
-      .slice(offset)
-      .replace(/^[\s,:;-]+/, '')
+    `${message.slice(0, start)}${message.slice(end)}`
+      .replace(/[ \t]{2,}/g, ' ')
       .trim() || 'Please respond to the conversation so far.'
   )
 }
 
-export function resolveAdvisorMention(
+export function resolveAgentMention(
   message: string,
   agents: AgentConfig[],
-): MentionedAdvisor | null {
-  const trimmed = message.trimStart()
-  const bracedMention = /^@\{([^}]+)\}\s*(?:[:,;-]\s*)?/.exec(trimmed)
+): MentionedAgent | null {
+  const bracedMention = /(^|\s)@\{([^}]+)\}\s*(?:[:,;-]\s*)?/.exec(message)
   if (bracedMention) {
     const agent = agents.find(
       (candidate) =>
-        candidate.name.toLocaleLowerCase() === bracedMention[1].trim().toLocaleLowerCase(),
+        candidate.name.toLocaleLowerCase() === bracedMention[2].trim().toLocaleLowerCase(),
     )
     if (agent) {
+      const start = bracedMention.index + bracedMention[1].length
       return {
         agent,
-        prompt: stripMentionRemainder(trimmed, bracedMention[0].length),
+        prompt: removeMention(
+          message,
+          start,
+          bracedMention.index + bracedMention[0].length,
+        ),
       }
     }
   }
 
-  const agent = [...agents]
-    .sort((first, second) => second.name.length - first.name.length)
-    .find((candidate) => {
-      const mention = `@${candidate.name}`
-      const prefix = trimmed.slice(0, mention.length)
-      const nextCharacter = trimmed[mention.length]
-      return (
-        prefix.toLocaleLowerCase() === mention.toLocaleLowerCase() &&
-        (nextCharacter === undefined || /[\s,.:;!?-]/.test(nextCharacter))
-      )
-    })
-
-  if (!agent) return null
-  return {
-    agent,
-    prompt: stripMentionRemainder(trimmed, agent.name.length + 1),
+  for (const agent of [...agents].sort((first, second) => second.name.length - first.name.length)) {
+    const escapedName = agent.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const mention = new RegExp(`(^|\\s)@${escapedName}(?=$|[\\s,.:;!?-])`, 'i')
+    const match = mention.exec(message)
+    if (!match) continue
+    const start = match.index + match[1].length
+    return {
+      agent,
+      prompt: removeMention(message, start, match.index + match[0].length),
+    }
   }
+  return null
 }

@@ -231,9 +231,22 @@ export function parseBoardroomInput(value: unknown): BoardroomRunInput {
   if (agentRoles[facilitatorId] !== 'advisor') {
     throw new BoardroomInputError('Choose an advisor as the boardroom facilitator.')
   }
+  const directAgentId =
+    value.directAgentId === undefined
+      ? undefined
+      : readText(value.directAgentId, 'Direct agent ID', 80)
+  if (
+    directAgentId &&
+    (!agents.some((agent) => agent.id === directAgentId) ||
+      agentRoles[directAgentId] === 'director' ||
+      agentRoles[directAgentId] === 'image_processor')
+  ) {
+    throw new BoardroomInputError('Choose a responding agent from this boardroom.')
+  }
 
   return {
     ...(meetingId ? { meetingId } : {}),
+    ...(directAgentId ? { directAgentId } : {}),
     task,
     ...(context ? { context } : {}),
     ...(imageDataUrl ? { imageDataUrl } : {}),
@@ -682,11 +695,17 @@ export async function runBoardroom(
     input.agentRoles ??
     Object.fromEntries(input.agents.map((agent) => [agent.id, 'advisor' as ChatAgentRole]))
   const orchestrator = input.agents.find((agent) => agentRoles[agent.id] === 'director')
-  let respondingAgents = input.agents.filter(
-    (agent) => agentRoles[agent.id] === 'advisor',
-  )
+  const directAgent = input.directAgentId
+    ? input.agents.find((agent) => agent.id === input.directAgentId)
+    : undefined
+  if (input.directAgentId && !directAgent) {
+    throw new Error('The requested agent is not part of this boardroom.')
+  }
+  let respondingAgents = directAgent
+    ? [directAgent]
+    : input.agents.filter((agent) => agentRoles[agent.id] === 'advisor')
 
-  if (orchestrator) {
+  if (orchestrator && !directAgent) {
     const candidates = input.agents.filter(
       (agent) =>
         agent.id !== orchestrator.id &&
@@ -723,14 +742,17 @@ export async function runBoardroom(
       throw new Error('The Orchestrator returned an invalid routing plan. Please try again.')
     }
     respondingAgents = selectedAgents
-    const imageAnalyser = input.imageDataUrl
-      ? candidates.find((agent) => agentRoles[agent.id] === 'image_analyser')
-      : undefined
-    if (imageAnalyser && !respondingAgents.includes(imageAnalyser)) {
-      respondingAgents = [imageAnalyser, ...respondingAgents.slice(0, 2)]
-    }
     for (const agent of respondingAgents) {
       emit({ type: 'route_complete', agentId: agent.id, agentName: agent.name })
+    }
+  }
+
+  if (input.imageDataUrl) {
+    const imageAnalyser = input.agents.find(
+      (agent) => agentRoles[agent.id] === 'image_analyser',
+    )
+    if (imageAnalyser && !respondingAgents.includes(imageAnalyser)) {
+      respondingAgents = [imageAnalyser, ...respondingAgents.slice(0, 2)]
     }
   }
 

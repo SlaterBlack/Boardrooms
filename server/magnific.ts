@@ -155,7 +155,7 @@ export async function upscaleWithMagnific(
 ): Promise<string> {
   const apiKey = process.env.MAGNIFIC_API_KEY?.trim()
   if (!apiKey) {
-    throw new MagnificError('Configure MAGNIFIC_API_KEY on the Boardrooms server.', 503)
+    throw new MagnificError('Configure MAGNIFIC_API_KEY on the DiscussIt server.', 503)
   }
 
   const timeoutMs = options.timeoutMs ?? TASK_TIMEOUT_MS
@@ -214,7 +214,7 @@ export async function generateWithMagnific(
 ): Promise<string> {
   const apiKey = process.env.MAGNIFIC_API_KEY?.trim()
   if (!apiKey) {
-    throw new MagnificError('Configure MAGNIFIC_API_KEY on the Boardrooms server.', 503)
+    throw new MagnificError('Configure MAGNIFIC_API_KEY on the DiscussIt server.', 503)
   }
   const model = input.model.replace(/^mystic:/, '')
   if (

@@ -225,13 +225,13 @@ function normalizeSharedBoardroomState(value: unknown): SharedBoardroomState {
     !Array.isArray(value.agents) ||
     !Array.isArray(value.meetings)
   ) {
-    throw new Error('The shared Boardrooms data response was invalid.')
+    throw new Error('The shared DiscussIt data response was invalid.')
   }
 
   const agents = value.agents.map(normalizeAgent)
   const meetings = value.meetings.map((meeting) => normalizeMeeting(meeting, false))
   if (agents.some((agent) => agent === null) || meetings.some((meeting) => meeting === null)) {
-    throw new Error('The shared Boardrooms data contains an invalid entry.')
+    throw new Error('The shared DiscussIt data contains an invalid entry.')
   }
 
   return {
@@ -287,14 +287,14 @@ async function fetchSharedBoardroomState(
   const response = await fetch(`/api/state${query}`, { cache: 'no-store', signal })
   if (response.status === 204) return null
   if (!response.ok) {
-    throw new Error(`Shared Boardrooms data returned ${response.status}.`)
+    throw new Error(`Shared DiscussIt data returned ${response.status}.`)
   }
   return normalizeSharedBoardroomState(await response.json())
 }
 
 async function loadSharedBoardroomState(signal?: AbortSignal): Promise<SharedBoardroomState> {
   let state = await fetchSharedBoardroomState(undefined, signal)
-  if (!state) throw new Error('The server did not return shared Boardrooms data.')
+  if (!state) throw new Error('The server did not return shared DiscussIt data.')
 
   const migrationComplete = localStorage.getItem(SERVER_IMPORT_STORAGE_KEY) === 'true'
   const hasLocalBoardroomData = [
@@ -503,7 +503,7 @@ function App() {
         setStorageError(
           requestError instanceof Error
             ? requestError.message
-            : 'Could not sync shared Boardrooms data.',
+            : 'Could not sync shared DiscussIt data.',
         )
       } finally {
         syncing = false
@@ -535,7 +535,7 @@ function App() {
           throw new Error(
             isRecord(result) && typeof result.error === 'string'
               ? result.error
-              : `Saving shared Boardrooms data returned ${response.status}.`,
+              : `Saving shared DiscussIt data returned ${response.status}.`,
           )
         }
 
@@ -551,7 +551,7 @@ function App() {
         setStorageError(
           requestError instanceof Error
             ? requestError.message
-            : 'Could not save shared Boardrooms data.',
+            : 'Could not save shared DiscussIt data.',
         )
       })
       .finally(() => {
@@ -731,27 +731,27 @@ function App() {
   if (authState !== 'authenticated') {
     return (
       <main className="auth-shell">
-        <a className="brand" href="/" aria-label="Boardrooms home">
-          <span className="brand-mark" aria-hidden="true">B</span>
-          <span>boardrooms</span>
+        <a className="brand" href="/" aria-label="DiscussIt home">
+          <span className="brand-mark" aria-hidden="true">D</span>
+          <span>DiscussIt</span>
         </a>
         <section className="auth-card">
           <p className="eyebrow">PRIVATE BOARDROOM</p>
           <h1>
             {authState === 'checking' && 'Connecting to the boardroom…'}
             {authState === 'unauthenticated' && 'Sign in to your boardroom'}
-            {authState === 'unavailable' && 'Boardroom unavailable'}
+            {authState === 'unavailable' && 'DiscussIt unavailable'}
           </h1>
           {authState === 'checking' && <p className="auth-copy">Checking your access…</p>}
           {authState === 'unavailable' && (
             <p className="auth-copy" role="alert">
-              {connectionError || 'The Boardrooms server could not be reached.'}
+              {connectionError || 'The DiscussIt server could not be reached.'}
             </p>
           )}
           {authState === 'unauthenticated' && (
             <>
               <p className="auth-copy">
-                Enter the shared access password configured by the Boardrooms host.
+                Enter the shared access password configured by the DiscussIt host.
               </p>
               <form className="login-form" onSubmit={signIn}>
                 <label htmlFor="access-password">Access password</label>
@@ -779,15 +779,15 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Boardrooms home">
-          <span className="brand-mark" aria-hidden="true">B</span>
-          <span>boardrooms</span>
+        <a className="brand" href="/" aria-label="DiscussIt home">
+          <span className="brand-mark" aria-hidden="true">D</span>
+          <span>DiscussIt</span>
         </a>
         <div className="topbar-actions">
           <div className={`service-status ${providerState}`}>
             <span className="status-dot" />
             {providerState === 'checking' && 'Connecting'}
-            {providerState === 'connected' && 'Boardroom ready'}
+            {providerState === 'connected' && 'DiscussIt ready'}
             {providerState === 'disconnected' && 'Server unavailable'}
           </div>
           {logoutError && <span className="logout-error" role="alert">{logoutError}</span>}
@@ -822,7 +822,7 @@ function App() {
         {storageError && <p className="storage-notice" role="alert">{storageError}</p>}
         {connectionError && (
           <div className="notice error-notice" role="alert">
-            <strong>Couldn’t connect to the Boardrooms server.</strong>
+            <strong>Couldn’t connect to the DiscussIt server.</strong>
             <span>{connectionError}</span>
           </div>
         )}
@@ -856,7 +856,7 @@ function App() {
                 <span>
                   Add an <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, or
                   <code> OPENROUTER_API_KEY</code> to the server’s <code>.env</code> file,
-                  then restart Boardrooms.
+                  then restart DiscussIt.
                 </span>
               </div>
             )}
@@ -961,7 +961,7 @@ function App() {
 
       <footer className="page-footer">
         <span>Thoughtful perspectives, brought together.</span>
-        <span>Agent profiles and chats sync across Boardrooms tabs and devices.</span>
+        <span>Agent profiles and chats sync across DiscussIt tabs and devices.</span>
       </footer>
 
       {showAgentModal && (

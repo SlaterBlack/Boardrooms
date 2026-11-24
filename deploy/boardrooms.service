@@ -1,5 +1,5 @@
 [Unit]
-Description=Boardrooms AI meeting hub
+Description=DiscussIt AI chat hub
 After=network.target
 
 [Service]

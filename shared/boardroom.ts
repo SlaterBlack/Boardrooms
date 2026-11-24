@@ -82,6 +82,7 @@ export interface Meeting {
 
 export interface BoardroomRunInput {
   meetingId?: string
+  directAgentId?: string
   task: string
   context?: string
   imageDataUrl?: string

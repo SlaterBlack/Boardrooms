@@ -348,11 +348,11 @@ function parseStoredState(value: unknown): BoardroomState {
     !Number.isInteger(value.revision) ||
     value.revision < 0
   ) {
-    throw new Error('Stored Boardrooms data has an unsupported or invalid format.')
+    throw new Error('Stored DiscussIt data has an unsupported or invalid format.')
   }
   const patch = parseBoardroomStatePatch(value)
   if (patch.agents === undefined || patch.meetings === undefined) {
-    throw new Error('Stored Boardrooms data is incomplete.')
+    throw new Error('Stored DiscussIt data is incomplete.')
   }
   return {
     revision: value.revision,

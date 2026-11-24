@@ -19,7 +19,7 @@ import type {
   MeetingStatus,
   ProviderAvailability,
 } from '../../shared/boardroom'
-import { isSecureImageUrl, resolveAdvisorMention } from '../../shared/chat'
+import { isSecureImageUrl, resolveAgentMention } from '../../shared/chat'
 import { streamBoardroom, streamBoardroomReport } from '../boardroomApi'
 import { createId } from '../createId'
 import Modal from './Modal'
@@ -48,10 +48,10 @@ interface ActiveMention {
 
 function getActiveMention(value: string, cursor: number): ActiveMention | null {
   const prefix = value.slice(0, cursor)
-  const match = /^\s*@(?:\{([^}]*)|([^\s{}]*))$/.exec(prefix)
+  const match = /(?:^|\s)@(?:\{([^}]*)|([^\s{}]*))$/.exec(prefix)
   if (!match) return null
   return {
-    start: prefix.lastIndexOf('@'),
+    start: prefix.length - match[0].length + match[0].lastIndexOf('@'),
     end: cursor,
     query: match[1] ?? match[2] ?? '',
   }
@@ -387,13 +387,17 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   const advisorAgents = meeting.agents.filter(
     (agent) => meeting.agentRoles[agent.id] === 'advisor',
   )
+  const mentionableAgents = meeting.agents.filter(
+    (agent) =>
+      meeting.agentRoles[agent.id] !== 'director' &&
+      meeting.agentRoles[agent.id] !== 'image_processor',
+  )
   const advisorCount = advisorAgents.length
   const activeMention = getActiveMention(chatDraft, chatCaretPosition)
   const mentionSuggestions =
-    meeting.chatType === 'informational' &&
     activeMention &&
     !dismissMentionSuggestions
-      ? advisorAgents
+      ? mentionableAgents
         .filter((agent) =>
           agent.name.toLocaleLowerCase().startsWith(activeMention.query.toLocaleLowerCase()),
         )
@@ -660,7 +664,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
     }
   }
 
-  function selectAdvisorMention(agent: Meeting['agents'][number]) {
+  function selectAgentMention(agent: Meeting['agents'][number]) {
     if (!activeMention) return
     const mentionText = `@{${agent.name}} `
     const updatedDraft =
@@ -703,13 +707,13 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         return
       }
     }
-    const advisors = currentMeeting.agents.filter(
-      (agent) => currentMeeting.agentRoles[agent.id] === 'advisor',
+    const mentionableAgents = currentMeeting.agents.filter(
+      (agent) =>
+        currentMeeting.agentRoles[agent.id] !== 'director' &&
+        currentMeeting.agentRoles[agent.id] !== 'image_processor',
     )
-    const mentionedAdvisor =
-      !analysisImageFile && currentMeeting.chatType === 'informational'
-        ? resolveAdvisorMention(content, advisors)
-        : null
+    const mentionedAgent =
+      !analysisImageFile ? resolveAgentMention(content, mentionableAgents) : null
     const userMessage: BoardroomChatMessage = {
       id: createId(),
       role: 'user',
@@ -737,16 +741,15 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
       await streamBoardroom(
         {
           meetingId: currentMeeting.id,
-          task: mentionedAdvisor?.prompt ?? content,
+          task: mentionedAgent?.prompt ?? content,
           context: formatChatContext(currentMeeting, currentMeeting.chatMessages),
           ...(imageDataUrl ? { imageDataUrl } : {}),
-          agents: mentionedAdvisor ? [mentionedAdvisor.agent] : currentMeeting.agents,
+          ...(mentionedAgent ? { directAgentId: mentionedAgent.agent.id } : {}),
+          agents: currentMeeting.agents,
           rounds: 1,
-          facilitatorId: mentionedAdvisor?.agent.id ?? currentMeeting.facilitatorId,
+          facilitatorId: currentMeeting.facilitatorId,
           synthesize: currentMeeting.chatType === 'document',
-          agentRoles: mentionedAdvisor
-            ? { [mentionedAdvisor.agent.id]: 'advisor' }
-            : currentMeeting.agentRoles,
+          agentRoles: currentMeeting.agentRoles,
         },
         controller.signal,
         (event) => {
@@ -1074,7 +1077,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         {meeting.mode === 'chat' && imageProcessor && !providers?.magnific && (
           <div className="notice setup-notice">
             <strong>Magnific access is needed to process images.</strong>
-            <span>Configure MAGNIFIC_API_KEY on the server, then restart Boardrooms.</span>
+            <span>Configure MAGNIFIC_API_KEY on the server, then restart DiscussIt.</span>
           </div>
         )}
         {meeting.chatType === 'document' && reportOnlyMissingProviders.length > 0 && (
@@ -1448,7 +1451,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                     setMentionSuggestionIndex((index) => Math.max(index - 1, 0))
                   } else if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault()
-                    selectAdvisorMention(
+                    selectAgentMention(
                       mentionSuggestions[activeMentionSuggestionIndex],
                     )
                   } else if (event.key === 'Escape') {
@@ -1460,8 +1463,8 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                   setDismissMentionSuggestions(false)
                 }}
                 placeholder={
-                  meeting.chatType === 'informational' && advisorAgents[0]
-                    ? `Ask a question, or start with @{${advisorAgents[0].name}} to address one advisor…`
+                  mentionableAgents[0]
+                    ? `Ask a question, or start with @{${mentionableAgents[0].name}} to address one agent…`
                     : 'Ask a question or share a follow-up…'
                 }
                 ref={chatInputRef}
@@ -1481,13 +1484,13 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                       className="chat-mention-option"
                       id={`advisor-mention-option-${index}`}
                       key={agent.id}
-                      onClick={() => selectAdvisorMention(agent)}
+                      onClick={() => selectAgentMention(agent)}
                       onMouseDown={(event) => event.preventDefault()}
                       role="option"
                       type="button"
                     >
                       <strong>{agent.name}</strong>
-                      <span>{agent.role}</span>
+                      <span>{agent.role} · {chatRoleLabel(meeting.agentRoles[agent.id])}</span>
                     </button>
                   ))}
                 </div>
@@ -1497,11 +1500,11 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
               <span>
                 {meeting.chatType === 'informational'
                   ? hasDirector
-                    ? 'The Orchestrator selects 1–3 roles for each prompt. Start with @{advisor name} to address one Meeting Member directly.'
-                    : 'Advisors respond directly. Start with @{advisor name} to ask one advisor.'
+                    ? 'The Orchestrator selects 1–3 roles for each prompt. Start with @{agent name} to direct a response.'
+                    : 'Agents respond directly. Start with @{agent name} to address one agent.'
                   : hasDirector
-                    ? 'The Orchestrator selects up to three roles, then the team synthesizes.'
-                    : `Each message triggers ${advisorCount} advisor${advisorCount === 1 ? '' : 's'} and a facilitator response.`}
+                    ? 'The Orchestrator selects up to three roles, then the team synthesizes. Start with @{agent name} to direct a response.'
+                    : `Each message triggers ${advisorCount} advisor${advisorCount === 1 ? '' : 's'} and a facilitator response. Start with @{agent name} to direct a response.`}
               </span>
               {isRunning ? (
                 <button className="secondary-button" onClick={stopDiscussion} type="button">

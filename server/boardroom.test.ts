@@ -127,6 +127,40 @@ test('parses an Orchestrator sequence of up to three eligible agents', () => {
   )
 })
 
+test('allows an explicit direct route to a specialist without changing its role', () => {
+  const imageGenerator = {
+    ...agent,
+    id: 'image-generator',
+    name: 'Image Generator',
+    model: 'gpt-image-1',
+    modelCapabilities: { supportsImageGeneration: true },
+  }
+  const input = parseBoardroomInput({
+    task: 'Create a timber pavilion concept image.',
+    agents: [agent, imageGenerator],
+    agentRoles: {
+      strategy: 'advisor',
+      'image-generator': 'image_generator',
+    },
+    facilitatorId: agent.id,
+    directAgentId: imageGenerator.id,
+  })
+
+  assert.equal(input.directAgentId, imageGenerator.id)
+  assert.equal(input.agentRoles?.[imageGenerator.id], 'image_generator')
+  assert.throws(
+    () =>
+      parseBoardroomInput({
+        task: 'Route this request.',
+        agents: [agent, { ...agent, id: 'director' }],
+        agentRoles: { strategy: 'advisor', director: 'director' },
+        facilitatorId: agent.id,
+        directAgentId: 'director',
+      }),
+    /Choose a responding agent/,
+  )
+})
+
 test('requires a capable Image Analyser for a valid bounded image attachment', () => {
   const analyser: AgentConfig = {
     ...agent,

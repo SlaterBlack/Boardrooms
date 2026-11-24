@@ -68,7 +68,7 @@ export function createReportPdf(report: BoardroomReport): jsPDF {
   pdf.setProperties({
     title: report.title,
     subject: `${report.type} report`,
-    creator: 'Boardrooms',
+    creator: 'DiscussIt',
   })
 
   function ensureSpace(height: number) {
