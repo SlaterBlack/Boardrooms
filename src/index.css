@@ -1,12 +1,77 @@
 :root {
-  font-family: 'Segoe UI', sans-serif;
-  color: #2c3932;
-  background: #f5f6f3;
+  --color-bg: #f7f1e6;
+  --color-surface: #fffaf0;
+  --color-surface-alt: #f1eadf;
+  --color-surface-soft: #e8eef3;
+  --color-primary: #355f83;
+  --color-primary-dark: #244560;
+  --color-primary-light: #e5eef5;
+  --color-primary-soft: #d7e5ef;
+  --color-on-primary: #fffaf0;
+  --color-text: #293a4b;
+  --color-text-strong: #1d2e3e;
+  --color-text-muted: #687889;
+  --color-text-faint: #8995a0;
+  --color-border: #ded6c9;
+  --color-border-strong: #c2d0db;
+  --color-danger: #a64e47;
+  --color-danger-light: #faefeb;
+  --color-success: #47745a;
+  --color-success-light: #eaf2e9;
+  --color-warning: #916636;
+  --color-warning-light: #f7efdf;
+  --color-info: #557997;
+  --color-info-light: #eaf1f5;
+  --color-overlay-rgb: 22 37 52;
+  --color-shadow-rgb: 39 55 70;
+  --font-family-base: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-size-base: 14px;
+  color-scheme: light;
+  --shadow-sm: 0 1px 2px rgb(var(--color-shadow-rgb) / 6%);
+  --shadow-md: 0 8px 24px rgb(var(--color-shadow-rgb) / 12%);
+  --shadow-lg: 0 16px 50px rgb(var(--color-shadow-rgb) / 18%);
+
+  font-family: var(--font-family-base);
+  color: var(--color-text);
+  background: var(--color-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-weight: 400;
+}
+
+html[data-theme='retro'] {
+  --color-bg: #081b2c;
+  --color-surface: #0e263c;
+  --color-surface-alt: #14324a;
+  --color-surface-soft: #183b55;
+  --color-primary: #79c8ec;
+  --color-primary-dark: #c9e2ef;
+  --color-primary-light: #163850;
+  --color-primary-soft: #1d4662;
+  --color-on-primary: #081b2c;
+  --color-text: #f2e7d0;
+  --color-text-strong: #fff5df;
+  --color-text-muted: #c1cfda;
+  --color-text-faint: #91a7b6;
+  --color-border: #315571;
+  --color-border-strong: #4a7894;
+  --color-danger: #ff8984;
+  --color-danger-light: #45242a;
+  --color-success: #8be0a4;
+  --color-success-light: #193d32;
+  --color-warning: #f2c47c;
+  --color-warning-light: #41351f;
+  --color-info: #9bd7f3;
+  --color-info-light: #153950;
+  --color-overlay-rgb: 2 10 18;
+  --color-shadow-rgb: 0 0 0;
+  --font-family-base: 'VT323', monospace;
+  color-scheme: dark;
+  --shadow-sm: 2px 2px 0 rgb(var(--color-shadow-rgb) / 55%);
+  --shadow-md: 4px 4px 0 rgb(var(--color-shadow-rgb) / 60%);
+  --shadow-lg: 6px 6px 0 rgb(var(--color-shadow-rgb) / 65%);
 }
 
 * {
@@ -17,6 +82,10 @@ body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
 }
 
 button,
@@ -27,6 +96,22 @@ textarea {
 }
 
 ::selection {
-  background: #d7e5d7;
-  color: #23332d;
+  background: var(--color-primary-soft);
+  color: var(--color-text-strong);
+}
+
+html[data-theme='retro'] :is(.app-shell, .auth-page) * {
+  border-radius: 0 !important;
+}
+
+html[data-theme='retro'] :is(h1, h2, h3, h4) {
+  font-family: var(--font-family-base) !important;
+  letter-spacing: 0;
+}
+
+html[data-theme='retro'] body {
+  font-synthesis: none;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: auto;
 }

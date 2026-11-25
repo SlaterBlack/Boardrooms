@@ -4,9 +4,10 @@ interface ModalProps {
   title: string
   onClose: () => void
   children: ReactNode
+  className?: string
 }
 
-function Modal({ title, onClose, children }: ModalProps) {
+function Modal({ title, onClose, children, className }: ModalProps) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') onClose()
@@ -26,7 +27,7 @@ function Modal({ title, onClose, children }: ModalProps) {
       <section
         aria-labelledby="modal-title"
         aria-modal="true"
-        className="modal-card"
+        className={`modal-card${className ? ` ${className}` : ''}`}
         role="dialog"
       >
         <header className="modal-header">

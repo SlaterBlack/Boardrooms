@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import type {
   AgentConfig,
   BoardroomChatMessage,
@@ -10,6 +10,7 @@ import type {
   Provider,
   ProviderAvailability,
 } from '../shared/boardroom'
+import AccountMenu, { type Theme } from './components/AccountMenu'
 import AgentEditorModal from './components/AgentEditorModal'
 import MeetingEditorModal, {
   type NewMeetingDetails,
@@ -22,6 +23,7 @@ import {
   normalizeDefaultChatRole,
   normalizeModelCapabilities,
 } from '../shared/chat'
+import discussItLogo from './assets/DiscussIt_64.png'
 import './App.css'
 
 const AGENT_STORAGE_KEY = 'boardrooms.agents'
@@ -58,6 +60,18 @@ const DEFAULT_AGENTS: AgentConfig[] = [
 type ProviderState = 'checking' | 'connected' | 'disconnected'
 type AuthState = 'checking' | 'authenticated' | 'unauthenticated' | 'unavailable'
 type Tab = 'meetings' | 'agents'
+
+const THEME_STORAGE_KEY = 'discussit_theme'
+
+function readTheme(): Theme {
+  const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
+  if (storedTheme === 'default' || storedTheme === 'retro') return storedTheme
+  if (storedTheme !== null) {
+    console.error('Stored DiscussIt theme is unsupported; resetting to Blue & Cream.')
+    localStorage.removeItem(THEME_STORAGE_KEY)
+  }
+  return 'default'
+}
 
 interface SharedBoardroomState {
   initialized: boolean
@@ -408,6 +422,7 @@ function formatDate(value: string): string {
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(readTheme)
   const [authState, setAuthState] = useState<AuthState>('checking')
   const [loginPassword, setLoginPassword] = useState('')
   const [authError, setAuthError] = useState('')
@@ -430,6 +445,14 @@ function App() {
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null)
   const [showMeetingModal, setShowMeetingModal] = useState(false)
   const [editingMeeting, setEditingMeeting] = useState<Meeting | null>(null)
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
+    document
+      .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute('content', theme === 'retro' ? '#081b2c' : '#f7f1e6')
+  }, [theme])
 
   function applySharedState(state: SharedBoardroomState) {
     stateRevisionRef.current = state.revision
@@ -721,6 +744,7 @@ function App() {
   }
 
   const activeMeeting = meetings.find((meeting) => meeting.id === activeMeetingId)
+  const isChatPage = activeTab === 'meetings' && activeMeeting?.mode === 'chat'
   const activeMeetings = meetings.filter(
     (meeting) => meeting.mode === 'chat' || meeting.status !== 'completed',
   )
@@ -730,59 +754,84 @@ function App() {
 
   if (authState !== 'authenticated') {
     return (
-      <main className="auth-shell">
-        <a className="brand" href="/" aria-label="DiscussIt home">
-          <span className="brand-mark" aria-hidden="true">D</span>
-          <span>DiscussIt</span>
-        </a>
-        <section className="auth-card">
-          <p className="eyebrow">PRIVATE BOARDROOM</p>
-          <h1>
-            {authState === 'checking' && 'Connecting to the boardroom…'}
-            {authState === 'unauthenticated' && 'Sign in to your boardroom'}
-            {authState === 'unavailable' && 'DiscussIt unavailable'}
-          </h1>
-          {authState === 'checking' && <p className="auth-copy">Checking your access…</p>}
-          {authState === 'unavailable' && (
-            <p className="auth-copy" role="alert">
-              {connectionError || 'The DiscussIt server could not be reached.'}
-            </p>
-          )}
-          {authState === 'unauthenticated' && (
-            <>
-              <p className="auth-copy">
-                Enter the shared access password configured by the DiscussIt host.
+      <div className="auth-page">
+        <header className="topbar">
+          <a className="brand" href="/" aria-label="DiscussIt home">
+            <img className="brand-logo" src={discussItLogo} alt="" />
+            <span>DiscussIt</span>
+          </a>
+          <AccountMenu theme={theme} onThemeChange={setTheme} />
+        </header>
+        <main className="auth-shell">
+          <section className="auth-card">
+            <p className="eyebrow">PRIVATE BOARDROOM</p>
+            <h1>
+              {authState === 'checking' && 'Connecting to the boardroom…'}
+              {authState === 'unauthenticated' && 'Sign in to your boardroom'}
+              {authState === 'unavailable' && 'DiscussIt unavailable'}
+            </h1>
+            {authState === 'checking' && <p className="auth-copy">Checking your access…</p>}
+            {authState === 'unavailable' && (
+              <p className="auth-copy" role="alert">
+                {connectionError || 'The DiscussIt server could not be reached.'}
               </p>
-              <form className="login-form" onSubmit={signIn}>
-                <label htmlFor="access-password">Access password</label>
-                <input
-                  autoComplete="current-password"
-                  id="access-password"
-                  onChange={(change) => setLoginPassword(change.target.value)}
-                  required
-                  type="password"
-                  value={loginPassword}
-                />
-                {authError && <p className="login-error" role="alert">{authError}</p>}
-                <button className="primary-button" type="submit">Enter boardroom</button>
-              </form>
-              <p className="auth-footnote">
-                Use only on a trusted local network. For untrusted networks, configure HTTPS.
-              </p>
-            </>
-          )}
-        </section>
-      </main>
+            )}
+            {authState === 'unauthenticated' && (
+              <>
+                <p className="auth-copy">
+                  Enter the shared access password configured by the DiscussIt host.
+                </p>
+                <form className="login-form" onSubmit={signIn}>
+                  <label htmlFor="access-password">Access password</label>
+                  <input
+                    autoComplete="current-password"
+                    id="access-password"
+                    onChange={(change) => setLoginPassword(change.target.value)}
+                    required
+                    type="password"
+                    value={loginPassword}
+                  />
+                  {authError && <p className="login-error" role="alert">{authError}</p>}
+                  <button className="primary-button" type="submit">Enter boardroom</button>
+                </form>
+                <p className="auth-footnote">
+                  Use only on a trusted local network. For untrusted networks, configure HTTPS.
+                </p>
+              </>
+            )}
+          </section>
+        </main>
+      </div>
     )
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${isChatPage ? ' chat-app-shell' : ''}`}>
       <header className="topbar">
         <a className="brand" href="/" aria-label="DiscussIt home">
-          <span className="brand-mark" aria-hidden="true">D</span>
+          <img className="brand-logo" src={discussItLogo} alt="" />
           <span>DiscussIt</span>
         </a>
+        <nav aria-label="Workspace sections" className="tab-navigation" role="tablist">
+          <button
+            aria-selected={activeTab === 'meetings'}
+            className={`tab-button ${activeTab === 'meetings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('meetings')}
+            role="tab"
+            type="button"
+          >
+            Chats <span className="tab-count">{activeMeetings.length}</span>
+          </button>
+          <button
+            aria-selected={activeTab === 'agents'}
+            className={`tab-button ${activeTab === 'agents' ? 'active' : ''}`}
+            onClick={() => setActiveTab('agents')}
+            role="tab"
+            type="button"
+          >
+            Agents <span className="tab-count">{agents.length}</span>
+          </button>
+        </nav>
         <div className="topbar-actions">
           <div className={`service-status ${providerState}`}>
             <span className="status-dot" />
@@ -791,34 +840,15 @@ function App() {
             {providerState === 'disconnected' && 'Server unavailable'}
           </div>
           {logoutError && <span className="logout-error" role="alert">{logoutError}</span>}
-          <button className="sign-out-button" onClick={() => void signOut()} type="button">
-            Sign out
-          </button>
+          <AccountMenu
+            onSignOut={() => void signOut()}
+            onThemeChange={setTheme}
+            theme={theme}
+          />
         </div>
       </header>
 
-      <nav aria-label="Workspace sections" className="tab-navigation" role="tablist">
-        <button
-          aria-selected={activeTab === 'meetings'}
-          className={`tab-button ${activeTab === 'meetings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('meetings')}
-          role="tab"
-          type="button"
-        >
-          Chats <span className="tab-count">{activeMeetings.length}</span>
-        </button>
-        <button
-          aria-selected={activeTab === 'agents'}
-          className={`tab-button ${activeTab === 'agents' ? 'active' : ''}`}
-          onClick={() => setActiveTab('agents')}
-          role="tab"
-          type="button"
-        >
-          Agents <span className="tab-count">{agents.length}</span>
-        </button>
-      </nav>
-
-      <main className="page-content">
+      <main className={`page-content${isChatPage ? ' chat-page-content' : ''}`}>
         {storageError && <p className="storage-notice" role="alert">{storageError}</p>}
         {connectionError && (
           <div className="notice error-notice" role="alert">
@@ -828,7 +858,11 @@ function App() {
         )}
 
         {activeTab === 'meetings' && (
-          <section aria-labelledby="meetings-title" role="tabpanel">
+          <section
+            aria-labelledby="meetings-title"
+            className={isChatPage ? 'chat-page-panel' : undefined}
+            role="tabpanel"
+          >
             <div className="page-heading">
               <div>
                 <p className="eyebrow">YOUR AI MEETING HUB</p>

@@ -368,13 +368,14 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   const [reportError, setReportError] = useState('')
   const [reportDownloadError, setReportDownloadError] = useState('')
   const [isGeneratingReport, setIsGeneratingReport] = useState(false)
+  const [isChatDescriptionExpanded, setIsChatDescriptionExpanded] = useState(false)
   const error = meeting.error
   const controllerRef = useRef<AbortController | null>(null)
   const reportControllerRef = useRef<AbortController | null>(null)
   const imageControllerRef = useRef<AbortController | null>(null)
   const meetingRef = useRef(meeting)
   const onUpdateRef = useRef(onUpdate)
-  const chatEndRef = useRef<HTMLDivElement>(null)
+  const chatThreadRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const analysisImageInputRef = useRef<HTMLInputElement>(null)
@@ -510,7 +511,8 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
 
   useEffect(() => {
     if (meeting.mode === 'chat') {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+      const chatThread = chatThreadRef.current
+      chatThread?.scrollTo({ top: chatThread.scrollHeight, behavior: 'smooth' })
     }
   }, [meeting.chatMessages.length, meeting.mode, meeting.reports.length, statusMessage])
 
@@ -1042,14 +1044,30 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
             )}
           </div>
         </div>
-        {meeting.task !== 'Ongoing boardroom chat' && (
-          <p className="meeting-agenda">{meeting.task}</p>
-        )}
+        {meeting.task !== 'Ongoing boardroom chat' &&
+          (meeting.mode === 'chat' ? (
+            <button
+              aria-controls="chat-description-panel"
+              aria-expanded={isChatDescriptionExpanded}
+              className="meeting-agenda-toggle"
+              onClick={() => setIsChatDescriptionExpanded((expanded) => !expanded)}
+              type="button"
+            >
+              <span className="meeting-agenda-preview">{meeting.task}</span>
+              <span className="meeting-agenda-toggle-label">
+                {isChatDescriptionExpanded ? 'Hide description' : 'Show description'}
+              </span>
+            </button>
+          ) : (
+            <p className="meeting-agenda">{meeting.task}</p>
+          ))}
         <div className="meeting-participants">
           {meeting.agents.map((agent) => (
             <span className="participant-chip" key={agent.id}>
               <span>{agent.name.trim().charAt(0).toUpperCase() || 'A'}</span>
-              {agent.name} · {chatRoleLabel(meeting.agentRoles[agent.id])}
+              <span className="participant-chip-label">
+                {agent.name} · {chatRoleLabel(meeting.agentRoles[agent.id])}
+              </span>
             </span>
           ))}
           <span className="meeting-rounds">
@@ -1304,7 +1322,13 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
             </div>
           ) : (
           <>
-          <div aria-label="Boardroom conversation" className="chat-thread" role="tabpanel">
+          <div className="chat-panel">
+          <div
+            aria-label="Boardroom conversation"
+            className="chat-thread"
+            ref={chatThreadRef}
+            role="tabpanel"
+          >
             {meeting.chatMessages.length === 0 ? (
               <div className="chat-empty">
                 <span className="empty-state-icon" aria-hidden="true">✳</span>
@@ -1377,7 +1401,6 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                 {statusMessage || 'The board is thinking…'}
               </div>
             )}
-            <div ref={chatEndRef} />
           </div>
           <form className="chat-composer" onSubmit={sendChatMessage}>
             <label className="chat-composer-label" htmlFor="boardroom-chat-message">
@@ -1526,6 +1549,28 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
               )}
             </div>
           </form>
+          {meeting.task !== 'Ongoing boardroom chat' && (
+            <div
+              aria-labelledby="chat-description-heading"
+              className="chat-description-popover"
+              hidden={!isChatDescriptionExpanded}
+              id="chat-description-panel"
+              role="region"
+            >
+              <div className="chat-description-popover-heading">
+                <strong id="chat-description-heading">Chat description</strong>
+                <button
+                  className="text-button"
+                  onClick={() => setIsChatDescriptionExpanded(false)}
+                  type="button"
+                >
+                  Close
+                </button>
+              </div>
+              <p>{meeting.task}</p>
+            </div>
+          )}
+          </div>
           </>
           )}
         </>
