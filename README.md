@@ -6,7 +6,7 @@ work through an ongoing chat or build a report together.
 
 ## Requirements
 
-- Node.js 20.19+ or 22.12+
+- Node.js 22.12+
 - npm
 - An API key for at least one supported provider
 
@@ -19,12 +19,13 @@ test -f .env || cp .env.example .env
 chmod 600 .env
 ```
 
-Set any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY` in
-`.env`, and set `BOARDROOMS_PASSWORD` to a unique password of at least 16
-characters for network sign-in. Set `MAGNIFIC_API_KEY` to enable the Magnific
-image processor. Provider keys stay on the DiscussIt server and are never sent to the
-browser. Do not commit `.env`. If `.env` already exists, edit it rather than
-replacing it.
+Set any of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or
+`OPENROUTER_API_KEY` in `.env`, and set `BOARDROOMS_PASSWORD` to a unique
+password of at least 16 characters for network sign-in. `GEMINI_API_KEY` is a
+Gemini Developer API key from Google AI Studio. Set `MAGNIFIC_API_KEY` to enable
+the Magnific image processor. Provider keys stay on the DiscussIt server and
+are never sent to the browser. Do not commit `.env`. If `.env` already exists,
+edit it rather than replacing it.
 
 ## Run locally
 
@@ -40,39 +41,56 @@ are made server-side.
 ## How a boardroom works
 
 - Use the **Chats** tab to create an ongoing chat, choose its type, and select
-  up to five agents from the roster. Each profile has a default boardroom role;
-  that role is preselected when the agent is added.
+  up to five agents from the roster. Each boardroom needs one text-capable
+  **Orchestrator** and at least one other text-capable agent.
 - Use the **Agents** tab to add, edit, or delete agent profiles. Configure each
   agent's provider, model ID, perspective, knowledge, skills, and instructions.
+  Model capabilities such as image input, image generation, image processing,
+  and web search are shown on the profile and derived from the selected model.
 - OpenRouter agents use the OpenAI-compatible API. Enter the provider-prefixed
   model slug from your OpenRouter model catalog (for example,
   `openai/gpt-4o-mini`).
-- Assign roles to agents per chat. Each new boardroom needs one
-  **Orchestrator** and at least one **Meeting Member**. The Orchestrator makes
-  one additional request per message and routes it to the smallest effective
-  sequence of one to three agents. Start a message with `@{advisor name}` to
-  address one Meeting Member directly; for example,
-  `@{Bonnie Green} assess the low-carbon options`. Follow-up messages include
-  the earlier conversation for context.
-- A **Researcher** uses the provider's web-search integration and includes
-  source links. Attach a PNG, JPEG, or WebP image (up to 7 MB) to have the
-  **Image Analyser** inspect it. The **Image Generator** works with models
-  marked as image-capable, including Magnific Mystic; generated images are
-  saved in the private server data directory and shared through the signed-in
-  app. Image generation and Magnific processing may incur provider charges.
-- The **Facilitator** asks focused clarifying questions when required, the
-  **Critic** identifies risks and mitigations, the **Synthesizer** reconciles
-  contributions, and the **Executor** turns approved decisions into usable
-  artifacts.
+- `google/gemini-decision-1` is available as a routing-only Orchestrator via
+  OpenRouter's Decisions API. It selects responding agents with typed choices;
+  it does not generate chat text and cannot be selected as a responder. Its
+  advertised standard pricing is input-token based, so it is inexpensive but
+  not free; verify current provider pricing before use.
+- Gemini agents use Google's Gemini Developer API with model discovery, image
+  understanding, streamed responses, Google Search grounding for Researcher
+  roles, and native image generation on compatible models. Google Search
+  grounding can incur separate search usage charges in addition to model-token
+  charges; check Google AI Studio pricing and quotas.
+- The Orchestrator makes one routing request per message and assigns temporary
+  roles to the smallest effective sequence of up to three agents, constrained
+  by their model capabilities. Start a message with `@{agent name}` to address
+  one agent directly; for example, `@{Bonnie Green} assess the low-carbon
+  options`. Follow-up messages include the earlier conversation for context.
+- Agent replies and facilitator synthesis stream into the chat as they are
+  generated. Internal Orchestrator routing and memory compaction remain
+  non-streamed; streaming changes when text appears, not the model calls or
+  token-based provider charges.
+- Depending on the request, the Orchestrator can select roles such as
+  Researcher, Facilitator, Critic, Synthesizer, Image Analyser, or Executor.
+  Attach a PNG, JPEG, or WebP image (up to 7 MB) for analysis by a model with
+  image-input support. For image creation, it selects one model with image
+  generation support, including Magnific Mystic. Generated images are saved
+  in the private server data directory. Image generation and Magnific
+  processing may incur provider charges.
+- Attach up to three PDF, DOCX, TXT, Markdown, CSV, XLSX, or PPTX files
+  (10 MB each) to a chat message. Originals are stored in the private server
+  data directory and can be downloaded from the conversation. DiscussIt extracts
+  selectable text for model context, capped at 12,000 characters per file and
+  18,000 characters across a message. Scanned PDFs and image-only content are
+  not OCR-processed.
 - Report/document-building chats have **Chat** and **Report preview** tabs.
   The Orchestrator routes each turn and the team synthesizes the chat. Choose
-  **Generate report** beneath a team synthesis to create a scope
-  document, review document, or custom report. Each advisor drafts relevant
-  sections from their expertise and the **Document Formatter** applies the
-  final document style. Configure company style rules in that agent's
-  instructions or knowledge. Downloading a saved PDF makes no provider request.
-- The **Image Processor** uses Magnific to upscale PNG, JPEG, or WebP images
-  (2x–16x); uploads are sent to Magnific and may incur charges.
+  **Generate report** beneath a team synthesis to create a scope document,
+  review document, or custom report. The agents contribute relevant sections,
+  and the Orchestrator selects an agent to assemble the final report. Configure
+  company style rules in agent instructions or knowledge. Downloading a saved
+  PDF makes no provider request.
+- Image-processing-capable services such as Magnific can upscale PNG, JPEG, or
+  WebP images (2x–16x); uploads are sent to Magnific and may incur charges.
 
 Agent profiles, meeting details, discussion transcripts, and chat messages are
 stored by the server in `.boardrooms-data/state.json`, so they are shared across

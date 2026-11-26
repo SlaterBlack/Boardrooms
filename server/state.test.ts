@@ -15,7 +15,6 @@ const agent = {
   id: 'strategy',
   name: 'Strategy',
   role: 'Market analyst',
-  defaultChatRole: 'advisor' as const,
   modelCapabilities: {},
   provider: 'openai' as const,
   model: 'gpt-6.2-sol',
@@ -125,12 +124,26 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
         ...meeting,
         mode: 'chat',
         agentRoles: { strategy: 'advisor' },
+        chatMemory: {
+          summary: 'The current design needs better daylight and circulation.',
+          throughMessageCount: 1,
+        },
         chatMessages: [
           {
             id: 'user-1',
             role: 'user',
             content: 'How can we improve this design?',
             createdAt: '2026-01-01T00:01:00.000Z',
+            attachments: [
+              {
+                id: '67f1319a-3ca4-4d81-8b48-7bf1e5cc0b20',
+                name: 'design-notes.pdf',
+                size: 1024,
+                contentType: 'application/pdf',
+                url: '/api/boardrooms/files/67f1319a-3ca4-4d81-8b48-7bf1e5cc0b20?name=design-notes.pdf',
+                extractedText: 'Keep circulation accessible.',
+              },
+            ],
           },
           {
             id: 'advisor-1',
@@ -157,9 +170,17 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
   })
   assert.equal(chat.meetings?.[0].mode, 'chat')
   assert.equal(chat.meetings?.[0].chatMessages.length, 2)
+  assert.deepEqual(chat.meetings?.[0].chatMemory, {
+    summary: 'The current design needs better daylight and circulation.',
+    throughMessageCount: 1,
+  })
   assert.equal(
     chat.meetings?.[0].chatMessages[1].imageUrl,
     'https://images.magnific.com/upscaled.png',
+  )
+  assert.equal(
+    chat.meetings?.[0].chatMessages[0].attachments?.[0].extractedText,
+    'Keep circulation accessible.',
   )
   assert.equal(chat.meetings?.[0].reports[0].type, 'review')
 
@@ -178,7 +199,7 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
   })
   assert.equal(
     formattedChat.meetings?.[0].agentRoles.formatter,
-    'report_formatter',
+    'advisor',
   )
 
   assert.throws(
@@ -189,6 +210,29 @@ test('validates chat messages and upgrades legacy meetings to structured discuss
             ...meeting,
             mode: 'chat',
             chatMessages: [{ id: 'bad', role: 'system', content: 'bad', createdAt: '' }],
+          },
+        ],
+      }),
+    /Meetings contains an invalid entry/,
+  )
+  assert.throws(
+    () =>
+      parseBoardroomStatePatch({
+        meetings: [
+          {
+            ...meeting,
+            chatMessages: [
+              {
+                id: 'user-1',
+                role: 'user',
+                content: 'Keep this decision.',
+                createdAt: '2026-01-01T00:01:00.000Z',
+              },
+            ],
+            chatMemory: {
+              summary: 'This summary covers a nonexistent message.',
+              throughMessageCount: 2,
+            },
           },
         ],
       }),

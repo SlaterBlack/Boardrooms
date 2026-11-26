@@ -4,22 +4,37 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type ReactNode,
 } from 'react'
 import type {
+  BoardroomChatAttachment,
   BoardroomChatMessage,
   BoardroomEvent,
   BoardroomReport,
   BoardroomReportEvent,
   BoardroomReportType,
-  ChatAgentRole,
+  BoardroomTurn,
   Meeting,
   MeetingMode,
   MeetingStatus,
   ProviderAvailability,
 } from '../../shared/boardroom'
-import { isSecureImageUrl, resolveAgentMention } from '../../shared/chat'
+import {
+  isBoardroomChatAttachment,
+  MAX_BOARDROOM_CHAT_ATTACHMENT_BYTES,
+  MAX_BOARDROOM_CHAT_ATTACHMENT_CONTEXT_LENGTH,
+  MAX_BOARDROOM_CHAT_ATTACHMENTS,
+} from '../../shared/boardroom'
+import {
+  isDecisionRoutingAgent,
+  isTextGenerationAgent,
+  isBoardroomImageSource,
+  modelCapabilityLabels,
+  resolveAgentMention,
+} from '../../shared/chat'
 import { streamBoardroom, streamBoardroomReport } from '../boardroomApi'
 import { createId } from '../createId'
 import Modal from './Modal'
@@ -33,6 +48,16 @@ interface MeetingRoomProps {
 }
 
 const CHAT_CONTEXT_LIMIT = 22_000
+const CHAT_ATTACHMENT_EXTENSIONS = new Set([
+  'csv',
+  'docx',
+  'md',
+  'markdown',
+  'pdf',
+  'pptx',
+  'txt',
+  'xlsx',
+])
 type DocumentTab = 'chat' | 'report'
 type ImageFlavor = 'photo' | 'sublime' | 'photo_denoiser'
 
@@ -73,38 +98,18 @@ function readFileAsDataUrl(file: File): Promise<string> {
   })
 }
 
-function chatRoleLabel(role: ChatAgentRole | undefined): string {
-  switch (role) {
-    case 'advisor':
-      return 'Meeting Member'
-    case 'director':
-      return 'Orchestrator'
-    case 'researcher':
-      return 'Researcher'
-    case 'facilitator':
-      return 'Facilitator'
-    case 'critic':
-      return 'Critic'
-    case 'synthesizer':
-      return 'Synthesizer'
-    case 'image_processor':
-      return 'Image processor'
-    case 'image_generator':
-      return 'Image generator'
-    case 'image_analyser':
-      return 'Image analyser'
-    case 'report_formatter':
-      return 'Document formatter'
-    case 'executor':
-      return 'Executor'
-    default:
-      return 'Meeting Member'
-  }
-}
-
 function renderMarkdownInline(text: string): ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g)
+  return text
+    .split(/(\[[^\]]+\]\(https:\/\/[^)\s]+\)|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g)
     .map((part, index) => {
+      const link = /^\[([^\]]+)\]\((https:\/\/[^)\s]+)\)$/.exec(part)
+      if (link) {
+        return (
+          <a href={link[2]} key={index} rel="noreferrer" target="_blank">
+            {link[1]}
+          </a>
+        )
+      }
       if (
         (part.startsWith('**') && part.endsWith('**')) ||
         (part.startsWith('__') && part.endsWith('__'))
@@ -272,6 +277,157 @@ function renderReportMarkdown(content: string): ReactNode[] {
   return blocks
 }
 
+function renderChatMarkdown(content: string): ReactNode[] {
+  const segments = content.split(/(```[\s\S]*?```)/g)
+  const nodes: ReactNode[] = []
+
+  segments.forEach((segment, segmentIndex) => {
+    if (!segment) return
+    if (segment.startsWith('```') && segment.endsWith('```')) {
+      const inner = segment.slice(3, -3).replace(/^[a-zA-Z0-9_-]+\r?\n/, '')
+      nodes.push(
+        <pre className="chat-code-block" key={`code-${segmentIndex}`}>
+          <code>{inner.trimEnd()}</code>
+        </pre>,
+      )
+      return
+    }
+
+    const lines = segment.split(/\r?\n/)
+    let index = 0
+    while (index < lines.length) {
+      const line = lines[index].trim()
+      if (!line) {
+        index += 1
+        continue
+      }
+
+      const heading = /^(#{1,6})\s+(.+)$/.exec(line)
+      if (heading) {
+        const level = Math.min(heading[1].length + 2, 6)
+        const Heading = `h${level}` as 'h3' | 'h4' | 'h5' | 'h6'
+        nodes.push(
+          createElement(
+            Heading,
+            { className: 'chat-md-heading', key: `h-${segmentIndex}-${index}` },
+            renderMarkdownInline(heading[2]),
+          ),
+        )
+        index += 1
+        continue
+      }
+
+      if (startsMarkdownTable(lines, index)) {
+        const headers = splitMarkdownTableRow(line)
+        const separators = splitMarkdownTableRow(lines[index + 1])
+        const rows: string[][] = []
+        index += 2
+        while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+          rows.push(splitMarkdownTableRow(lines[index]))
+          index += 1
+        }
+        nodes.push(
+          <div className="report-preview-table-wrap" key={`tbl-${segmentIndex}-${index}`}>
+            <table>
+              <thead>
+                <tr>
+                  {headers.map((cell, cellIndex) => (
+                    <th
+                      key={cellIndex}
+                      style={{ textAlign: markdownTableAlignment(separators[cellIndex]) }}
+                    >
+                      {renderMarkdownInline(cell)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {headers.map((_, cellIndex) => (
+                      <td
+                        key={cellIndex}
+                        style={{ textAlign: markdownTableAlignment(separators[cellIndex]) }}
+                      >
+                        {renderMarkdownInline(row[cellIndex] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>,
+        )
+        continue
+      }
+
+      if (/^[-*+]\s+(.+)$/.test(line)) {
+        const items: string[] = []
+        while (index < lines.length) {
+          const item = /^[-*+]\s+(.+)$/.exec(lines[index].trim())
+          if (!item) break
+          items.push(item[1])
+          index += 1
+        }
+        nodes.push(
+          <ul className="chat-md-list" key={`ul-${segmentIndex}-${index}`}>
+            {items.map((item, itemIndex) => (
+              <li key={itemIndex}>{renderMarkdownInline(item)}</li>
+            ))}
+          </ul>,
+        )
+        continue
+      }
+
+      if (/^\d+\.\s+(.+)$/.test(line)) {
+        const items: string[] = []
+        while (index < lines.length) {
+          const item = /^\d+\.\s+(.+)$/.exec(lines[index].trim())
+          if (!item) break
+          items.push(item[1])
+          index += 1
+        }
+        nodes.push(
+          <ol className="chat-md-list" key={`ol-${segmentIndex}-${index}`}>
+            {items.map((item, itemIndex) => (
+              <li key={itemIndex}>{renderMarkdownInline(item)}</li>
+            ))}
+          </ol>,
+        )
+        continue
+      }
+
+      const paragraph = [line]
+      index += 1
+      while (
+        index < lines.length &&
+        lines[index].trim() &&
+        !/^(#{1,6})\s+/.test(lines[index].trim()) &&
+        !/^[-*+]\s+/.test(lines[index].trim()) &&
+        !/^\d+\.\s+/.test(lines[index].trim()) &&
+        !startsMarkdownTable(lines, index)
+      ) {
+        paragraph.push(lines[index].trim())
+        index += 1
+      }
+      nodes.push(
+        <p className="chat-md-paragraph" key={`p-${segmentIndex}-${index}`}>
+          {renderMarkdownInline(paragraph.join(' '))}
+        </p>,
+      )
+    }
+  })
+
+  return nodes
+}
+
+function displayChatContent(message: BoardroomChatMessage): string {
+  if (message.role === 'user' && message.imageUrl) {
+    return message.content.replace(/\n\[Image attached\.\]$/, '')
+  }
+  return message.content
+}
+
 function statusLabel(status: MeetingStatus, mode: MeetingMode): string {
   if (mode === 'chat') {
     if (status === 'running') return 'Responding'
@@ -294,29 +450,69 @@ function statusLabel(status: MeetingStatus, mode: MeetingMode): string {
 function formatChatContext(
   meeting: Meeting,
   messages: BoardroomChatMessage[],
+  latestAttachments: BoardroomChatAttachment[] = [],
 ): string {
   const boardroomContext =
     meeting.task && meeting.task !== 'Ongoing boardroom chat'
       ? `Boardroom context:\n${meeting.task}\n\n`
       : ''
-  const entries = messages.map((message) => {
-    const speaker =
-      message.role === 'user'
-        ? 'User'
-        : message.role === 'facilitator'
-          ? `${message.agentName ?? 'Facilitator'} — synthesis`
-          : `${message.agentName ?? 'Advisor'}${message.agentRole ? ` (${message.agentRole})` : ''}`
-    return `${speaker}:\n${message.content}`
-  })
+  const memoryPrefix = meeting.chatMemory
+    ? `Persistent chat memory:\n${meeting.chatMemory.summary}\n\n`
+    : ''
+  const entries = messages
+    .slice(meeting.chatMemory?.throughMessageCount ?? 0)
+    .map((message) => {
+      const speaker =
+        message.role === 'user'
+          ? 'User'
+          : message.role === 'facilitator'
+            ? `${message.agentName ?? 'Facilitator'} — synthesis`
+            : `${message.agentName ?? 'Advisor'}${message.agentRole ? ` (${message.agentRole})` : ''}`
+      const attachmentText = message.attachments
+        ?.map(
+          (attachment) =>
+            `[Untrusted attachment: ${attachment.name}]\n${attachment.extractedText}`,
+        )
+        .join('\n\n')
+      return `${speaker}:\n${message.content}${attachmentText ? `\n\n${attachmentText}` : ''}`
+    })
+
+  const attachmentHeaders = latestAttachments.map(
+    (attachment) => `[Untrusted attachment: ${attachment.name}]\n`,
+  )
+  const textBudget = Math.max(
+    0,
+    Math.floor(
+      (MAX_BOARDROOM_CHAT_ATTACHMENT_CONTEXT_LENGTH -
+        attachmentHeaders.reduce((total, header) => total + header.length, 0)) /
+        Math.max(latestAttachments.length, 1),
+    ) - 48,
+  )
+  const currentAttachmentsContext = latestAttachments
+    .map((attachment, index) => {
+      const text = attachment.extractedText.slice(0, textBudget)
+      const truncated =
+        attachment.extractedText.length > text.length
+          ? '\n[Attachment text truncated for model context.]'
+          : ''
+      return `${attachmentHeaders[index]}${text}${truncated}`
+    })
+    .join('\n\n')
+  const historicalContextLimit =
+    CHAT_CONTEXT_LIMIT -
+    (currentAttachmentsContext ? currentAttachmentsContext.length + 2 : 0)
 
   let context = ''
   for (let firstEntry = 0; firstEntry <= entries.length; firstEntry += 1) {
     const omitted = firstEntry > 0 ? 'Earlier messages omitted for context length.\n\n' : ''
-    context = `${boardroomContext}${omitted}Conversation so far:\n${entries.slice(firstEntry).join('\n\n')}`
-    if (context.length <= CHAT_CONTEXT_LIMIT || firstEntry >= entries.length) break
+    context = `${boardroomContext}${memoryPrefix}${omitted}Recent conversation:\n${entries.slice(firstEntry).join('\n\n')}`
+    if (context.length <= historicalContextLimit || firstEntry >= entries.length) break
   }
 
-  return context.slice(-CHAT_CONTEXT_LIMIT)
+  const combinedContext = currentAttachmentsContext
+    ? `${context.slice(-historicalContextLimit)}\n\n${currentAttachmentsContext}`
+    : context
+  return combinedContext.slice(-CHAT_CONTEXT_LIMIT)
 }
 
 function reportTypeLabel(type: BoardroomReportType): string {
@@ -336,6 +532,8 @@ function providerLabel(provider: Meeting['agents'][number]['provider']): string 
       return 'OpenAI'
     case 'anthropic':
       return 'Anthropic'
+    case 'gemini':
+      return 'Gemini'
     case 'openrouter':
       return 'OpenRouter'
     case 'magnific':
@@ -347,9 +545,21 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   const [isRunning, setIsRunning] = useState(false)
   const [runStatusError, setRunStatusError] = useState('')
   const [statusMessage, setStatusMessage] = useState('')
+  const [chatMemoryWarning, setChatMemoryWarning] = useState('')
   const [chatDraft, setChatDraft] = useState('')
-  const [analysisImageFile, setAnalysisImageFile] = useState<File | null>(null)
-  const [analysisImageError, setAnalysisImageError] = useState('')
+  const [chatImageFile, setChatImageFile] = useState<File | null>(null)
+  const [chatAttachmentFiles, setChatAttachmentFiles] = useState<File[]>([])
+  const [chatAttachmentError, setChatAttachmentError] = useState('')
+  const [liveTurn, setLiveTurn] = useState<
+    (BoardroomTurn & { createdAt: string }) | null
+  >(null)
+  const [liveSynthesis, setLiveSynthesis] = useState<{
+    messageId: string
+    agentId: string
+    agentName: string
+    createdAt: string
+    content: string
+  } | null>(null)
   const [chatCaretPosition, setChatCaretPosition] = useState(0)
   const [mentionSuggestionIndex, setMentionSuggestionIndex] = useState(0)
   const [dismissMentionSuggestions, setDismissMentionSuggestions] = useState(false)
@@ -369,6 +579,10 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   const [reportDownloadError, setReportDownloadError] = useState('')
   const [isGeneratingReport, setIsGeneratingReport] = useState(false)
   const [isChatDescriptionExpanded, setIsChatDescriptionExpanded] = useState(false)
+  const [showImagesDrawer, setShowImagesDrawer] = useState(false)
+  const [showUpscaler, setShowUpscaler] = useState(false)
+  const [isDraggingAttachment, setIsDraggingAttachment] = useState(false)
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const error = meeting.error
   const controllerRef = useRef<AbortController | null>(null)
   const reportControllerRef = useRef<AbortController | null>(null)
@@ -378,22 +592,57 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   const chatThreadRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
-  const analysisImageInputRef = useRef<HTMLInputElement>(null)
+  const chatImageInputRef = useRef<HTMLInputElement>(null)
+  const chatFileInputRef = useRef<HTMLInputElement>(null)
   const imageProcessor = meeting.agents.find(
-    (agent) => meeting.agentRoles[agent.id] === 'image_processor',
-  )
-  const imageAnalyser = meeting.agents.find(
-    (agent) => meeting.agentRoles[agent.id] === 'image_analyser',
+    (agent) =>
+      agent.provider === 'magnific' &&
+      agent.modelCapabilities?.supportsImageProcessing === true,
   )
   const advisorAgents = meeting.agents.filter(
-    (agent) => meeting.agentRoles[agent.id] === 'advisor',
+    (agent) =>
+      meeting.agentRoles[agent.id] !== 'director' &&
+      !isDecisionRoutingAgent(agent) &&
+      !(
+        agent.provider === 'magnific' &&
+        agent.modelCapabilities?.supportsImageProcessing &&
+        !agent.modelCapabilities.supportsImageGeneration
+      ),
   )
   const mentionableAgents = meeting.agents.filter(
     (agent) =>
       meeting.agentRoles[agent.id] !== 'director' &&
-      meeting.agentRoles[agent.id] !== 'image_processor',
+      !isDecisionRoutingAgent(agent) &&
+      !(
+        agent.provider === 'magnific' &&
+        agent.modelCapabilities?.supportsImageProcessing &&
+        !agent.modelCapabilities.supportsImageGeneration
+      ),
   )
   const advisorCount = advisorAgents.length
+  const streamedChatMessages: BoardroomChatMessage[] = [
+    ...(liveTurn
+      ? [{
+          id: liveTurn.id,
+          role: 'agent' as const,
+          content: liveTurn.content,
+          createdAt: liveTurn.createdAt,
+          agentId: liveTurn.agentId,
+          agentName: liveTurn.agentName,
+          agentRole: liveTurn.agentRole,
+        }]
+      : []),
+    ...(liveSynthesis
+      ? [{
+          id: liveSynthesis.messageId,
+          role: 'facilitator' as const,
+          content: liveSynthesis.content,
+          createdAt: liveSynthesis.createdAt,
+          agentId: liveSynthesis.agentId,
+          agentName: liveSynthesis.agentName,
+        }]
+      : []),
+  ].filter((message) => message.content.length > 0)
   const activeMention = getActiveMention(chatDraft, chatCaretPosition)
   const mentionSuggestions =
     activeMention &&
@@ -417,13 +666,17 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         meeting.agents
           .filter(
             (agent) =>
-              meeting.agentRoles[agent.id] !== 'image_processor' &&
+              !(
+                agent.provider === 'magnific' &&
+                agent.modelCapabilities?.supportsImageProcessing &&
+                !agent.modelCapabilities.supportsImageGeneration
+              ) &&
               !providers?.[agent.provider],
           )
           .map((agent) => agent.provider),
       ),
     ],
-    [meeting.agents, meeting.agentRoles, providers],
+    [meeting.agents, providers],
   )
   const missingReportProviders = useMemo(
     () => [
@@ -431,18 +684,48 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         meeting.agents
           .filter(
             (agent) =>
-              (meeting.agentRoles[agent.id] === 'advisor' ||
-                meeting.agentRoles[agent.id] === 'report_formatter') &&
+              !(
+                agent.provider === 'magnific' &&
+                agent.modelCapabilities?.supportsImageProcessing &&
+                !agent.modelCapabilities.supportsImageGeneration
+              ) &&
               !providers?.[agent.provider],
           )
           .map((agent) => agent.provider),
       ),
     ],
-    [meeting.agents, meeting.agentRoles, providers],
+    [meeting.agents, providers],
   )
   const reportOnlyMissingProviders = missingReportProviders.filter(
     (provider) => !missingProviders.includes(provider),
   )
+  const storedImages = useMemo(
+    () =>
+      meeting.chatMessages
+        .filter((message): message is BoardroomChatMessage & { imageUrl: string } =>
+          Boolean(message.imageUrl),
+        )
+        .map((message) => ({
+          id: message.id,
+          imageUrl: message.imageUrl,
+          label:
+            message.role === 'user'
+              ? 'Attached'
+              : message.agentName ?? 'Generated',
+          createdAt: message.createdAt,
+        })),
+    [meeting.chatMessages],
+  )
+  const chatImagePreviewUrl = useMemo(
+    () => (chatImageFile ? URL.createObjectURL(chatImageFile) : null),
+    [chatImageFile],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (chatImagePreviewUrl) URL.revokeObjectURL(chatImagePreviewUrl)
+    }
+  }, [chatImagePreviewUrl])
 
   useEffect(() => {
     meetingRef.current = meeting
@@ -512,9 +795,20 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   useEffect(() => {
     if (meeting.mode === 'chat') {
       const chatThread = chatThreadRef.current
-      chatThread?.scrollTo({ top: chatThread.scrollHeight, behavior: 'smooth' })
+      chatThread?.scrollTo({
+        top: chatThread.scrollHeight,
+        behavior:
+          liveTurn?.content || liveSynthesis?.content ? 'auto' : 'smooth',
+      })
     }
-  }, [meeting.chatMessages.length, meeting.mode, meeting.reports.length, statusMessage])
+  }, [
+    liveSynthesis?.content,
+    liveTurn?.content,
+    meeting.chatMessages.length,
+    meeting.mode,
+    meeting.reports.length,
+    statusMessage,
+  ])
 
   useEffect(
     () => () => {
@@ -551,13 +845,34 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         setStatusMessage(`${event.agentName} was selected to respond…`)
         break
       case 'turn_start':
+        setLiveTurn(null)
         setStatusMessage(
           meetingRef.current.mode === 'chat'
             ? `${event.agentName} is thinking…`
             : `Round ${event.round}: ${event.agentName} is thinking…`,
         )
         break
+      case 'turn_delta':
+        setLiveTurn((current) => ({
+          id: event.turnId,
+          agentId: event.agentId,
+          agentName: event.agentName,
+          agentRole: event.agentRole,
+          round: event.round,
+          createdAt:
+            current?.id === event.turnId
+              ? current.createdAt
+              : new Date().toISOString(),
+          content:
+            current?.id === event.turnId
+              ? current.content + event.delta
+              : event.delta,
+        }))
+        break
       case 'turn_complete':
+        setLiveTurn((current) =>
+          current?.id === event.turn.id ? null : current,
+        )
         if (meetingRef.current.mode === 'chat') {
           updateMeeting({
             chatMessages: [
@@ -581,27 +896,67 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         }
         break
       case 'synthesis_start':
+        setLiveSynthesis({
+          messageId: event.messageId,
+          agentId: event.agentId,
+          agentName: event.agentName,
+          createdAt: new Date().toISOString(),
+          content: '',
+        })
         setStatusMessage(`${event.agentName} is preparing the synthesis…`)
         break
+      case 'synthesis_delta':
+        setLiveSynthesis((current) =>
+          current?.messageId === event.messageId
+            ? { ...current, content: current.content + event.delta }
+            : current,
+        )
+        break
       case 'synthesis_complete':
+        setLiveSynthesis((current) =>
+          current?.messageId === event.messageId ? null : current,
+        )
         if (meetingRef.current.mode === 'chat') {
           updateMeeting({
             synthesis: event.content,
-            chatMessages: [
-              ...meetingRef.current.chatMessages,
-              {
-                id: `synthesis-${createId()}`,
-                role: 'facilitator',
-                content: event.content,
-                createdAt: new Date().toISOString(),
-                agentId: event.agentId,
-                agentName: event.agentName,
-              },
-            ],
+            chatMessages: meetingRef.current.chatMessages.some(
+              (message) => message.id === event.messageId,
+            )
+              ? meetingRef.current.chatMessages.map((message) =>
+                  message.id === event.messageId
+                    ? { ...message, content: event.content }
+                    : message,
+                )
+              : [
+                  ...meetingRef.current.chatMessages,
+                  {
+                    id: event.messageId,
+                    role: 'facilitator',
+                    content: event.content,
+                    createdAt: new Date().toISOString(),
+                    agentId: event.agentId,
+                    agentName: event.agentName,
+                  },
+                ],
           })
         } else {
           updateMeeting({ synthesis: event.content })
         }
+        break
+      case 'chat_memory_start':
+        setStatusMessage('Compacting chat memory…')
+        break
+      case 'chat_memory_update':
+        updateMeeting({
+          chatMemory: {
+            summary: event.summary,
+            throughMessageCount: meetingRef.current.chatMessages.length,
+          },
+        })
+        setChatMemoryWarning('')
+        break
+      case 'chat_memory_error':
+        setChatMemoryWarning(event.message)
         break
       case 'error':
         updateMeeting({ status: 'interrupted', error: event.message })
@@ -618,7 +973,10 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   async function startDiscussion() {
     const controller = new AbortController()
     controllerRef.current = controller
+    setLiveTurn(null)
+    setLiveSynthesis(null)
     setIsRunning(true)
+    setChatMemoryWarning('')
     setStatusMessage('Preparing the boardroom…')
     updateMeeting({
       status: 'running',
@@ -683,11 +1041,167 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
     })
   }
 
+  function selectChatImage(file: File | null) {
+    if (!file) return
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setChatImageFile(null)
+      setChatAttachmentError('Choose a PNG, JPEG, or WebP image.')
+      if (chatImageInputRef.current) chatImageInputRef.current.value = ''
+      return
+    }
+    if (file.size > 7 * 1024 * 1024) {
+      setChatImageFile(null)
+      setChatAttachmentError('Images must be no larger than 7 MB.')
+      if (chatImageInputRef.current) chatImageInputRef.current.value = ''
+      return
+    }
+    setChatImageFile(file)
+    setChatAttachmentError('')
+  }
+
+  function selectChatAttachments(files: File[]) {
+    if (files.length === 0) return
+    const unsupported = files.find((file) => {
+      const extension = file.name.split('.').at(-1)?.toLowerCase()
+      return !extension || !CHAT_ATTACHMENT_EXTENSIONS.has(extension)
+    })
+    if (unsupported) {
+      setChatAttachmentError(
+        'Choose PDF, DOCX, TXT, Markdown, CSV, XLSX, or PPTX files.',
+      )
+      return
+    }
+    if (files.some((file) => file.size === 0)) {
+      setChatAttachmentError('Empty files cannot be attached.')
+      return
+    }
+    if (files.some((file) => file.size > MAX_BOARDROOM_CHAT_ATTACHMENT_BYTES)) {
+      setChatAttachmentError('Files must be no larger than 10 MB each.')
+      return
+    }
+    if (chatAttachmentFiles.length + files.length > MAX_BOARDROOM_CHAT_ATTACHMENTS) {
+      setChatAttachmentError('Attach up to 3 documents per message.')
+      return
+    }
+    setChatAttachmentFiles((current) => [...current, ...files])
+    setChatAttachmentError('')
+  }
+
+  function pasteChatImage(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
+    if (files.length === 0) return
+    event.preventDefault()
+    const image = files.find((file) => file.type.startsWith('image/'))
+    if (image) {
+      const fileName =
+        image.name || `pasted-image.${image.type.split('/')[1] || 'png'}`
+      selectChatImage(
+        image.name ? image : new File([image], fileName, { type: image.type }),
+      )
+    }
+    const documents = files.filter((file) => !file.type.startsWith('image/'))
+    if (documents.length > 0) selectChatAttachments(documents)
+  }
+
+  function handleChatDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    setIsDraggingAttachment(false)
+    const files = Array.from(event.dataTransfer.files)
+    const image = files.find((file) => file.type.startsWith('image/'))
+    if (image) selectChatImage(image)
+    const documents = files.filter((file) => !file.type.startsWith('image/'))
+    if (documents.length > 0) selectChatAttachments(documents)
+    if (!image && documents.length === 0) {
+      setChatAttachmentError('Choose supported documents or a PNG, JPEG, or WebP image.')
+    }
+  }
+
+  async function fetchImageAsFile(imageUrl: string, baseName: string): Promise<File> {
+    const response = await fetch(imageUrl)
+    if (!response.ok) {
+      throw new Error('Could not load the selected image.')
+    }
+    const blob = await response.blob()
+    const mime = ['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)
+      ? blob.type
+      : 'image/png'
+    const ext = mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1]
+    const safeName = baseName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 32) || 'image'
+    return new File([blob], `${safeName}.${ext}`, { type: mime })
+  }
+
+  async function reuseImageInChat(imageUrl: string, label: string) {
+    try {
+      const file = await fetchImageAsFile(imageUrl, label)
+      selectChatImage(file)
+      setShowImagesDrawer(false)
+      setDocumentTab('chat')
+      chatInputRef.current?.focus()
+    } catch (error) {
+      setChatAttachmentError(
+        error instanceof Error ? error.message : 'Could not attach the selected image.',
+      )
+    }
+  }
+
+  async function loadImageIntoUpscaler(imageUrl: string, label: string) {
+    try {
+      const file = await fetchImageAsFile(imageUrl, label)
+      setImageFile(file)
+      setImageProcessingError('')
+      setShowUpscaler(true)
+      setShowImagesDrawer(false)
+    } catch (error) {
+      setImageProcessingError(
+        error instanceof Error ? error.message : 'Could not load the image for upscaling.',
+      )
+      setShowUpscaler(true)
+    }
+  }
+
+  function copyMessageContent(messageId: string, text: string) {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopiedMessageId(messageId)
+      window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === messageId ? null : current))
+      }, 1500)
+    })
+  }
+
+  function insertMentionTrigger() {
+    const textarea = chatInputRef.current
+    const cursor = textarea ? textarea.selectionStart : chatDraft.length
+    const prefix = chatDraft.slice(0, cursor)
+    const needsSpace = prefix.length > 0 && !/\s$/.test(prefix)
+    const insertion = needsSpace ? ' @' : '@'
+    const nextDraft = `${prefix}${insertion}${chatDraft.slice(cursor)}`
+    const nextCursor = cursor + insertion.length
+    setChatDraft(nextDraft)
+    setChatCaretPosition(nextCursor)
+    setDismissMentionSuggestions(false)
+    setMentionSuggestionIndex(0)
+    requestAnimationFrame(() => {
+      if (!textarea) return
+      textarea.focus()
+      textarea.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
   async function sendChatMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const hasAttachments = Boolean(chatImageFile || chatAttachmentFiles.length > 0)
     const content =
       chatDraft.trim() ||
-      (analysisImageFile ? 'Please analyse the attached image.' : '')
+      (chatImageFile && chatAttachmentFiles.length > 0
+        ? 'Please review the attached image and files.'
+        : chatImageFile
+          ? 'Please review the attached image.'
+          : chatAttachmentFiles.length > 0
+            ? 'Please review the attached files.'
+            : '')
     if (
       !content ||
       isRunning ||
@@ -698,29 +1212,123 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
     }
 
     const currentMeeting = meetingRef.current
-    let imageDataUrl: string | undefined
-    if (analysisImageFile) {
-      try {
-        imageDataUrl = await readFileAsDataUrl(analysisImageFile)
-      } catch (error) {
-        setAnalysisImageError(
-          error instanceof Error ? error.message : 'Could not read the selected image.',
-        )
-        return
-      }
-    }
+    setLiveTurn(null)
+    setLiveSynthesis(null)
     const mentionableAgents = currentMeeting.agents.filter(
       (agent) =>
         currentMeeting.agentRoles[agent.id] !== 'director' &&
-        currentMeeting.agentRoles[agent.id] !== 'image_processor',
+        !isDecisionRoutingAgent(agent) &&
+        !(
+          agent.provider === 'magnific' &&
+          agent.modelCapabilities?.supportsImageProcessing &&
+          !agent.modelCapabilities.supportsImageGeneration
+        ),
     )
-    const mentionedAgent =
-      !analysisImageFile ? resolveAgentMention(content, mentionableAgents) : null
+    const mentionedAgent = resolveAgentMention(content, mentionableAgents)
+    const supportsChatImageInput = (agent: Meeting['agents'][number]) =>
+      isTextGenerationAgent(agent) &&
+      agent.modelCapabilities?.supportsVision === true &&
+      currentMeeting.agentRoles[agent.id] !== 'director'
+    if (
+      chatImageFile &&
+      !currentMeeting.agents.some(supportsChatImageInput)
+    ) {
+      setChatAttachmentError(
+        'Add an agent whose model supports image input to use attachments in chat.',
+      )
+      return
+    }
+    if (
+      chatImageFile &&
+      mentionedAgent &&
+      !supportsChatImageInput(mentionedAgent.agent)
+    ) {
+      setChatAttachmentError(
+        `${mentionedAgent.agent.name} cannot inspect attached images. Mention a vision-capable agent or remove the attachment.`,
+      )
+      return
+    }
+
+    let imageDataUrl: string | undefined
+    let imageUrl: string | undefined
+    const uploadedAttachments: BoardroomChatAttachment[] = []
+    const controller = new AbortController()
+    controllerRef.current = controller
+    setIsRunning(true)
+    setChatMemoryWarning('')
+    setStatusMessage(hasAttachments ? 'Uploading attachments…' : 'Preparing the boardroom…')
+    try {
+      if (chatImageFile) {
+        imageDataUrl = await readFileAsDataUrl(chatImageFile)
+        const response = await fetch('/api/boardrooms/images/uploads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageDataUrl }),
+          signal: controller.signal,
+        })
+        const result: unknown = await response.json().catch(() => null)
+        if (!response.ok) {
+          const message =
+            isRecord(result) && typeof result.error === 'string'
+              ? result.error
+              : `Image upload failed (${response.status}).`
+          throw new Error(message)
+        }
+        if (!isRecord(result) || !isBoardroomImageSource(result.imageUrl)) {
+          throw new Error('The server returned an invalid image attachment URL.')
+        }
+        imageUrl = result.imageUrl
+      }
+
+      for (const file of chatAttachmentFiles) {
+        const response = await fetch('/api/boardrooms/files/uploads', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-File-Name': encodeURIComponent(file.name),
+          },
+          body: file,
+          signal: controller.signal,
+        })
+        const result: unknown = await response.json().catch(() => null)
+        if (!response.ok) {
+          const message =
+            isRecord(result) && typeof result.error === 'string'
+              ? result.error
+              : `File upload failed (${response.status}).`
+          throw new Error(message)
+        }
+        if (
+          !isRecord(result) ||
+          !isBoardroomChatAttachment(result.attachment)
+        ) {
+          throw new Error('The server returned invalid file attachment details.')
+        }
+        uploadedAttachments.push(result.attachment)
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        setStatusMessage('Attachment upload cancelled.')
+      } else {
+        setChatAttachmentError(
+          error instanceof Error ? error.message : 'Could not upload the attachments.',
+        )
+        setStatusMessage('')
+      }
+      controllerRef.current = null
+      setIsRunning(false)
+      return
+    }
+
     const userMessage: BoardroomChatMessage = {
       id: createId(),
       role: 'user',
-      content: imageDataUrl ? `${content}\n[Image attached for analysis.]` : content,
+      content: imageDataUrl ? `${content}\n[Image attached.]` : content,
       createdAt: new Date().toISOString(),
+      ...(imageUrl ? { imageUrl } : {}),
+      ...(uploadedAttachments.length > 0
+        ? { attachments: uploadedAttachments }
+        : {}),
     }
     updateMeeting({
       chatMessages: [...currentMeeting.chatMessages, userMessage],
@@ -729,12 +1337,11 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
       error: '',
     })
     setChatDraft('')
-    setAnalysisImageFile(null)
-    setAnalysisImageError('')
-    if (analysisImageInputRef.current) analysisImageInputRef.current.value = ''
-    const controller = new AbortController()
-    controllerRef.current = controller
-    setIsRunning(true)
+    setChatImageFile(null)
+    setChatAttachmentFiles([])
+    setChatAttachmentError('')
+    if (chatImageInputRef.current) chatImageInputRef.current.value = ''
+    if (chatFileInputRef.current) chatFileInputRef.current.value = ''
     setStatusMessage('Preparing the boardroom…')
 
     let completed = false
@@ -744,7 +1351,11 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         {
           meetingId: currentMeeting.id,
           task: mentionedAgent?.prompt ?? content,
-          context: formatChatContext(currentMeeting, currentMeeting.chatMessages),
+          context: formatChatContext(
+            currentMeeting,
+            currentMeeting.chatMessages,
+            uploadedAttachments,
+          ),
           ...(imageDataUrl ? { imageDataUrl } : {}),
           ...(mentionedAgent ? { directAgentId: mentionedAgent.agent.id } : {}),
           agents: currentMeeting.agents,
@@ -832,15 +1443,6 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
       currentMeeting,
       currentMeeting.chatMessages.slice(0, sourceIndex + 1),
     )
-    const reportAgents = currentMeeting.agents.filter(
-      (agent) =>
-        currentMeeting.agentRoles[agent.id] === 'advisor' ||
-        currentMeeting.agentRoles[agent.id] === 'report_formatter',
-    )
-    const reportAgentRoles: Record<string, ChatAgentRole> = {}
-    for (const agent of reportAgents) {
-      reportAgentRoles[agent.id] = currentMeeting.agentRoles[agent.id]
-    }
     const controller = new AbortController()
     reportControllerRef.current = controller
     setIsGeneratingReport(true)
@@ -857,12 +1459,9 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
           type: reportType,
           instructions: reportInstructions.trim(),
           context,
-          agents: reportAgents,
-          agentRoles: reportAgentRoles,
+          agents: currentMeeting.agents,
+          agentRoles: currentMeeting.agentRoles,
           facilitatorId: currentMeeting.facilitatorId,
-          formatterId: Object.entries(currentMeeting.agentRoles).find(
-            ([, role]) => role === 'report_formatter',
-          )?.[0],
         },
         controller.signal,
         (event: BoardroomReportEvent) => {
@@ -924,7 +1523,9 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
   async function upscaleUploadedImage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const processor = meetingRef.current.agents.find(
-      (agent) => meetingRef.current.agentRoles[agent.id] === 'image_processor',
+      (agent) =>
+        agent.provider === 'magnific' &&
+        agent.modelCapabilities?.supportsImageProcessing === true,
     )
     if (!imageFile || !processor || !providers?.magnific || isUpscaling) return
 
@@ -954,7 +1555,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
             : `Image processing failed (${response.status}).`
         throw new Error(message)
       }
-      if (!isRecord(result) || !isSecureImageUrl(result.imageUrl)) {
+      if (!isRecord(result) || !isBoardroomImageSource(result.imageUrl)) {
         throw new Error('Magnific returned an invalid image URL.')
       }
 
@@ -1028,19 +1629,39 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
               {statusLabel(meeting.status, meeting.mode)}
             </span>
             {meeting.mode === 'chat' && (
-              <button
-                className="secondary-button"
-                disabled={meeting.status === 'running'}
-                onClick={onEdit}
-                title={
-                  meeting.status === 'running'
-                    ? 'Wait for the current response to finish before editing.'
-                    : undefined
-                }
-                type="button"
-              >
-                Edit chat
-              </button>
+              <>
+                <button
+                  aria-expanded={showImagesDrawer}
+                  className={`secondary-button${showImagesDrawer ? ' active-toggle' : ''}`}
+                  onClick={() => setShowImagesDrawer((open) => !open)}
+                  type="button"
+                >
+                  Images ({storedImages.length})
+                </button>
+                {imageProcessor && (
+                  <button
+                    aria-expanded={showUpscaler || isUpscaling}
+                    className={`secondary-button${showUpscaler || isUpscaling ? ' active-toggle' : ''}`}
+                    onClick={() => setShowUpscaler((open) => !open)}
+                    type="button"
+                  >
+                    Upscaler
+                  </button>
+                )}
+                <button
+                  className="secondary-button"
+                  disabled={meeting.status === 'running'}
+                  onClick={onEdit}
+                  title={
+                    meeting.status === 'running'
+                      ? 'Wait for the current response to finish before editing.'
+                      : undefined
+                  }
+                  type="button"
+                >
+                  Edit chat
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1066,7 +1687,9 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
             <span className="participant-chip" key={agent.id}>
               <span>{agent.name.trim().charAt(0).toUpperCase() || 'A'}</span>
               <span className="participant-chip-label">
-                {agent.name} · {chatRoleLabel(meeting.agentRoles[agent.id])}
+                {agent.name} · {meeting.agentRoles[agent.id] === 'director'
+                  ? 'Orchestrator'
+                  : modelCapabilityLabels(agent.modelCapabilities).join(', ') || 'Text'}
               </span>
             </span>
           ))}
@@ -1154,13 +1777,22 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         </div>
       )}
 
-      {meeting.mode === 'chat' && imageProcessor && (
+      {meeting.mode === 'chat' && imageProcessor && (showUpscaler || isUpscaling) && (
         <form className="image-processing-tools" onSubmit={upscaleUploadedImage}>
           <div className="image-processing-heading">
             <div>
               <strong>Image processor · {imageProcessor.name}</strong>
               <span>Enhance and upscale an image with Magnific.</span>
             </div>
+            {!isUpscaling && (
+              <button
+                className="text-button"
+                onClick={() => setShowUpscaler(false)}
+                type="button"
+              >
+                Hide
+              </button>
+            )}
           </div>
           <div className="image-processing-controls">
             <label className="image-file-field">
@@ -1255,6 +1887,60 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         </form>
       )}
 
+      {meeting.mode === 'chat' && showImagesDrawer && (
+        <section aria-label="Stored chat images" className="chat-images-drawer">
+          <div className="chat-images-drawer-header">
+            <div>
+              <strong>Stored images ({storedImages.length})</strong>
+              <span>Images attached or generated in this chat are saved on the server.</span>
+            </div>
+            <button
+              className="text-button"
+              onClick={() => setShowImagesDrawer(false)}
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+          {storedImages.length === 0 ? (
+            <p className="chat-images-empty">
+              No images have been attached or generated in this chat yet.
+            </p>
+          ) : (
+            <div className="chat-images-grid">
+              {[...storedImages].reverse().map((item) => (
+                <div className="chat-image-card" key={item.id}>
+                  <a href={item.imageUrl} rel="noreferrer" target="_blank">
+                    <img alt={item.label} loading="lazy" src={item.imageUrl} />
+                  </a>
+                  <div className="chat-image-card-meta">
+                    <span>{item.label}</span>
+                    <div className="chat-image-card-actions">
+                      <button
+                        className="text-button"
+                        onClick={() => void reuseImageInChat(item.imageUrl, item.label)}
+                        type="button"
+                      >
+                        Use in chat
+                      </button>
+                      {imageProcessor && (
+                        <button
+                          className="text-button"
+                          onClick={() => void loadImageIntoUpscaler(item.imageUrl, item.label)}
+                          type="button"
+                        >
+                          Upscale
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {meeting.mode === 'chat' ? (
         <>
           {meeting.chatType === 'document' && (
@@ -1322,14 +2008,28 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
             </div>
           ) : (
           <>
-          <div className="chat-panel">
+          <div
+            className={`chat-panel${isDraggingAttachment ? ' is-dragging' : ''}`}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setIsDraggingAttachment(false)
+              }
+            }}
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes('Files')) {
+                event.preventDefault()
+                setIsDraggingAttachment(true)
+              }
+            }}
+            onDrop={handleChatDrop}
+          >
           <div
             aria-label="Boardroom conversation"
             className="chat-thread"
             ref={chatThreadRef}
             role="tabpanel"
           >
-            {meeting.chatMessages.length === 0 ? (
+            {meeting.chatMessages.length === 0 && streamedChatMessages.length === 0 ? (
               <div className="chat-empty">
                 <span className="empty-state-icon" aria-hidden="true">✳</span>
                 <h3>Your boardroom is ready.</h3>
@@ -1340,7 +2040,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                 </p>
               </div>
             ) : (
-              meeting.chatMessages.map((message) => (
+              [...meeting.chatMessages, ...streamedChatMessages].map((message) => (
                 <article
                   className={`chat-message chat-message-${message.role}`}
                   key={message.id}
@@ -1353,29 +2053,93 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                     </span>
                   )}
                   <div className="chat-message-body">
-                    <span className="chat-speaker">
-                      {message.role === 'user'
-                        ? 'You'
-                        : message.role === 'facilitator'
-                          ? `Board synthesis · ${message.agentName ?? facilitator}`
-                          : `${message.agentName ?? 'Advisor'}${message.agentRole ? ` · ${message.agentRole}` : ''}`}
-                    </span>
-                    <div className="chat-bubble">{message.content}</div>
+                    <div className="chat-message-header">
+                      <span className="chat-speaker">
+                        {message.role === 'user'
+                          ? 'You'
+                          : message.role === 'facilitator'
+                            ? `Board synthesis · ${message.agentName ?? facilitator}`
+                            : `${message.agentName ?? 'Advisor'}${message.agentRole ? ` · ${message.agentRole}` : ''}`}
+                      </span>
+                      {message.role !== 'user' && (
+                        <button
+                          className="text-button chat-copy-button"
+                          onClick={() => copyMessageContent(message.id, message.content)}
+                          type="button"
+                        >
+                          {copiedMessageId === message.id ? 'Copied' : 'Copy'}
+                        </button>
+                      )}
+                    </div>
+                    <div className="chat-bubble chat-markdown">
+                      {renderChatMarkdown(displayChatContent(message))}
+                    </div>
                     {message.imageUrl && (
-                      <a
-                        className="chat-image-link"
-                        href={message.imageUrl}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        <img
-                          alt={`Image result from ${message.agentName ?? 'the image processor'}`}
-                          className="chat-image-result"
-                          loading="lazy"
-                          src={message.imageUrl}
-                        />
-                      </a>
+                      <div className="chat-image-attachment">
+                        <a
+                          className="chat-image-link"
+                          href={message.imageUrl}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          <img
+                            alt={`Image from ${message.role === 'user' ? 'you' : (message.agentName ?? 'the boardroom')}`}
+                            className="chat-image-result"
+                            loading="lazy"
+                            src={message.imageUrl}
+                          />
+                        </a>
+                        <div className="chat-image-actions">
+                          <button
+                            className="text-button"
+                            onClick={() =>
+                              void reuseImageInChat(
+                                message.imageUrl!,
+                                message.role === 'user'
+                                  ? 'attached-image'
+                                  : (message.agentName ?? 'generated-image'),
+                              )
+                            }
+                            type="button"
+                          >
+                            Use in prompt
+                          </button>
+                          {imageProcessor && (
+                            <button
+                              className="text-button"
+                              onClick={() =>
+                                void loadImageIntoUpscaler(
+                                  message.imageUrl!,
+                                  message.role === 'user'
+                                    ? 'attached-image'
+                                    : (message.agentName ?? 'generated-image'),
+                                )
+                              }
+                              type="button"
+                            >
+                              Upscale
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     )}
+                    {message.attachments?.map((attachment) => (
+                      <a
+                        className="chat-file-attachment"
+                        download
+                        href={attachment.url}
+                        key={attachment.id}
+                      >
+                        <span aria-hidden="true" className="chat-file-icon">▤</span>
+                        <span className="chat-file-attachment-info">
+                          <strong>{attachment.name}</strong>
+                          <small>
+                            {(attachment.size / 1024).toFixed(0)} KB · Download original
+                          </small>
+                        </span>
+                        <span className="chat-file-download">Download</span>
+                      </a>
+                    ))}
                     {message.role === 'facilitator' && (
                       <button
                         className="text-button chat-report-button"
@@ -1395,7 +2159,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                 </article>
               ))
             )}
-            {isRunning && (
+            {isRunning && !liveTurn && !liveSynthesis?.content && (
               <div className="chat-thinking" role="status">
                 <span className="activity-pulse" />
                 {statusMessage || 'The board is thinking…'}
@@ -1403,42 +2167,63 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
             )}
           </div>
           <form className="chat-composer" onSubmit={sendChatMessage}>
-            <label className="chat-composer-label" htmlFor="boardroom-chat-message">
-              Message the board
-            </label>
-            {imageAnalyser && (
-              <label className="image-attachment-control">
-                Attach an image for {imageAnalyser.name} to analyse
-                <input
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] ?? null
-                    if (
-                      file &&
-                      !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
-                    ) {
-                      setAnalysisImageFile(null)
-                      setAnalysisImageError('Choose a PNG, JPEG, or WebP image.')
-                      return
-                    }
-                    if (file && file.size > 7 * 1024 * 1024) {
-                      setAnalysisImageFile(null)
-                      setAnalysisImageError('Images for analysis must be no larger than 7 MB.')
-                      return
-                    }
-                    setAnalysisImageFile(file)
-                    setAnalysisImageError('')
+            {chatImageFile && (
+              <div className="chat-attachment-preview">
+                {chatImagePreviewUrl && (
+                  <img alt={chatImageFile.name} src={chatImagePreviewUrl} />
+                )}
+                <div className="chat-attachment-preview-info">
+                  <strong>{chatImageFile.name}</strong>
+                  <span>{(chatImageFile.size / 1024).toFixed(0)} KB · Attached</span>
+                </div>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setChatImageFile(null)
+                    setChatAttachmentError('')
+                    if (chatImageInputRef.current) chatImageInputRef.current.value = ''
                   }}
-                  ref={analysisImageInputRef}
-                  type="file"
-                />
-              </label>
+                  type="button"
+                >
+                  Remove
+                </button>
+              </div>
             )}
-            {analysisImageFile && (
-              <span className="image-attachment-name">{analysisImageFile.name}</span>
+            {chatAttachmentFiles.map((file, index) => (
+              <div className="chat-attachment-preview" key={`${file.name}-${index}`}>
+                <span aria-hidden="true" className="chat-file-icon">▤</span>
+                <div className="chat-attachment-preview-info">
+                  <strong>{file.name}</strong>
+                  <span>{(file.size / 1024).toFixed(0)} KB · Text will be extracted</span>
+                </div>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setChatAttachmentFiles((current) =>
+                      current.filter((_, fileIndex) => fileIndex !== index),
+                    )
+                    setChatAttachmentError('')
+                  }}
+                  type="button"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            {chatAttachmentError && (
+              <p className="form-error image-attachment-error" role="alert">
+                {chatAttachmentError}
+                <button
+                  className="text-button"
+                  onClick={() => setChatAttachmentError('')}
+                  type="button"
+                >
+                  Dismiss
+                </button>
+              </p>
             )}
-            {analysisImageError && (
-              <p className="form-error" role="alert">{analysisImageError}</p>
+            {chatMemoryWarning && (
+              <p className="form-error" role="status">{chatMemoryWarning}</p>
             )}
             <div className="chat-input-wrap">
               <textarea
@@ -1454,8 +2239,10 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                     : undefined
                 }
                 aria-expanded={mentionSuggestions.length > 0}
+                aria-label="Message the board"
                 id="boardroom-chat-message"
                 maxLength={4_000}
+                onPaste={pasteChatImage}
                 onChange={(event) => {
                   setChatDraft(event.target.value)
                   setChatCaretPosition(event.target.selectionStart)
@@ -1463,22 +2250,28 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                   setMentionSuggestionIndex(0)
                 }}
                 onKeyDown={(event) => {
-                  if (mentionSuggestions.length === 0) return
-                  if (event.key === 'ArrowDown') {
+                  if (mentionSuggestions.length > 0) {
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault()
+                      setMentionSuggestionIndex((index) =>
+                        Math.min(index + 1, mentionSuggestions.length - 1),
+                      )
+                    } else if (event.key === 'ArrowUp') {
+                      event.preventDefault()
+                      setMentionSuggestionIndex((index) => Math.max(index - 1, 0))
+                    } else if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      selectAgentMention(
+                        mentionSuggestions[activeMentionSuggestionIndex],
+                      )
+                    } else if (event.key === 'Escape') {
+                      setDismissMentionSuggestions(true)
+                    }
+                    return
+                  }
+                  if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault()
-                    setMentionSuggestionIndex((index) =>
-                      Math.min(index + 1, mentionSuggestions.length - 1),
-                    )
-                  } else if (event.key === 'ArrowUp') {
-                    event.preventDefault()
-                    setMentionSuggestionIndex((index) => Math.max(index - 1, 0))
-                  } else if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    selectAgentMention(
-                      mentionSuggestions[activeMentionSuggestionIndex],
-                    )
-                  } else if (event.key === 'Escape') {
-                    setDismissMentionSuggestions(true)
+                    event.currentTarget.form?.requestSubmit()
                   }
                 }}
                 onSelect={(event) => {
@@ -1487,11 +2280,11 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                 }}
                 placeholder={
                   mentionableAgents[0]
-                    ? `Ask a question, or start with @{${mentionableAgents[0].name}} to address one agent…`
-                    : 'Ask a question or share a follow-up…'
+                    ? `Message the board… (Enter to send, Shift+Enter for new line, @ to mention an agent, or drop/paste files)`
+                    : 'Message the board… (Enter to send, Shift+Enter for new line)'
                 }
                 ref={chatInputRef}
-                rows={3}
+                rows={2}
                 value={chatDraft}
               />
               {mentionSuggestions.length > 0 && (
@@ -1513,22 +2306,61 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                       type="button"
                     >
                       <strong>{agent.name}</strong>
-                      <span>{agent.role} · {chatRoleLabel(meeting.agentRoles[agent.id])}</span>
+                      <span>
+                        {agent.role} · {modelCapabilityLabels(agent.modelCapabilities).join(', ') || 'Text'}
+                      </span>
                     </button>
                   ))}
                 </div>
               )}
             </div>
             <div className="chat-composer-footer">
-              <span>
-                {meeting.chatType === 'informational'
-                  ? hasDirector
-                    ? 'The Orchestrator selects 1–3 roles for each prompt. Start with @{agent name} to direct a response.'
-                    : 'Agents respond directly. Start with @{agent name} to address one agent.'
-                  : hasDirector
-                    ? 'The Orchestrator selects up to three roles, then the team synthesizes. Start with @{agent name} to direct a response.'
-                    : `Each message triggers ${advisorCount} advisor${advisorCount === 1 ? '' : 's'} and a facilitator response. Start with @{agent name} to direct a response.`}
-              </span>
+              <div className="chat-composer-tools">
+                <label className="secondary-button chat-tool-button">
+                  + Image
+                  <input
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="Choose an image to attach"
+                    className="sr-only-file-input"
+                    onChange={(event) => selectChatImage(event.target.files?.[0] ?? null)}
+                    ref={chatImageInputRef}
+                    type="file"
+                  />
+                </label>
+                <label className="secondary-button chat-tool-button">
+                  + Files
+                  <input
+                    accept=".pdf,.docx,.txt,.md,.markdown,.csv,.xlsx,.pptx"
+                    aria-label="Choose documents to attach"
+                    className="sr-only-file-input"
+                    multiple
+                    onChange={(event) => {
+                      selectChatAttachments(Array.from(event.target.files ?? []))
+                      event.currentTarget.value = ''
+                    }}
+                    ref={chatFileInputRef}
+                    type="file"
+                  />
+                </label>
+                {mentionableAgents.length > 0 && (
+                  <button
+                    className="secondary-button chat-tool-button"
+                    onClick={insertMentionTrigger}
+                    type="button"
+                  >
+                    @ Agent
+                  </button>
+                )}
+                <span className="chat-composer-hint">
+                  {meeting.chatType === 'informational'
+                    ? hasDirector
+                      ? 'Orchestrator routes 1–3 agents by capability'
+                      : 'Direct agent replies'
+                    : hasDirector
+                      ? 'Orchestrator routing · team synthesis'
+                      : `${advisorCount} advisor${advisorCount === 1 ? '' : 's'} + synthesis`}
+                </span>
+              </div>
               {isRunning ? (
                 <button className="secondary-button" onClick={stopDiscussion} type="button">
                   Stop response
@@ -1537,7 +2369,9 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                 <button
                   className="primary-button"
                   disabled={
-                    (!chatDraft.trim() && !analysisImageFile) ||
+                    (!chatDraft.trim() &&
+                      !chatImageFile &&
+                      chatAttachmentFiles.length === 0) ||
                     meeting.status === 'running' ||
                     isGeneratingReport ||
                     missingProviders.length > 0
@@ -1574,7 +2408,10 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
           </>
           )}
         </>
-      ) : meeting.transcript.length === 0 && !meeting.synthesis ? (
+      ) : meeting.transcript.length === 0 &&
+        !meeting.synthesis &&
+        !liveTurn &&
+        !liveSynthesis ? (
         <div className="empty-boardroom">
           <div className="empty-illustration" aria-hidden="true">
             <span>◌</span><i /><i /><i />
@@ -1584,7 +2421,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
         </div>
       ) : (
         <div className="discussion">
-          {meeting.transcript.map((turn) => (
+          {[...meeting.transcript, ...(liveTurn ? [liveTurn] : [])].map((turn) => (
             <article className="turn-card" key={turn.id}>
               <div className="turn-heading">
                 <span className="turn-avatar">{turn.agentName.charAt(0).toUpperCase()}</span>
@@ -1596,7 +2433,7 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
               <p>{turn.content}</p>
             </article>
           ))}
-          {meeting.synthesis && (
+          {(meeting.synthesis || liveSynthesis?.content) && (
             <article className="synthesis-card">
               <div className="synthesis-heading">
                 <span className="synthesis-mark" aria-hidden="true">✳</span>
@@ -1605,7 +2442,9 @@ function MeetingRoom({ meeting, providers, onBack, onEdit, onUpdate }: MeetingRo
                   <h3>Synthesis by {facilitator}</h3>
                 </div>
               </div>
-              <div className="synthesis-content">{meeting.synthesis}</div>
+              <div className="synthesis-content">
+                {liveSynthesis?.content || meeting.synthesis}
+              </div>
             </article>
           )}
         </div>

@@ -1,6 +1,10 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import type { AgentConfig, ChatAgentRole, ChatType, Meeting } from '../../shared/boardroom'
-import { CHAT_AGENT_ROLES, isChatAgentRole } from '../../shared/chat'
+import {
+  isDecisionRoutingAgent,
+  isTextGenerationAgent,
+  modelCapabilityLabels,
+} from '../../shared/chat'
 import Modal from './Modal'
 
 export interface NewMeetingDetails {
@@ -25,64 +29,13 @@ function providerLabel(provider: AgentConfig['provider']): string {
       return 'OpenAI'
     case 'anthropic':
       return 'Anthropic'
+    case 'gemini':
+      return 'Gemini'
     case 'openrouter':
       return 'OpenRouter'
     case 'magnific':
       return 'Magnific'
   }
-}
-
-function chatRoleLabel(role: ChatAgentRole): string {
-  switch (role) {
-    case 'advisor':
-      return 'Meeting Member'
-    case 'director':
-      return 'Orchestrator'
-    case 'researcher':
-      return 'Researcher'
-    case 'facilitator':
-      return 'Facilitator'
-    case 'critic':
-      return 'Critic'
-    case 'synthesizer':
-      return 'Synthesizer'
-    case 'image_processor':
-      return 'Image Processor (Magnific)'
-    case 'image_generator':
-      return 'Image Generator'
-    case 'image_analyser':
-      return 'Image Analyser'
-    case 'report_formatter':
-      return 'Document Formatter'
-    case 'executor':
-      return 'Executor'
-  }
-}
-
-function canAssignRole(agent: AgentConfig, role: ChatAgentRole): boolean {
-  if (
-    agent.provider === 'magnific' &&
-    role !== 'image_generator' &&
-    role !== 'image_processor'
-  ) {
-    return false
-  }
-  if (role === 'image_generator') {
-    return agent.modelCapabilities?.supportsImageGeneration === true
-  }
-  if (role === 'image_processor') {
-    return (
-      agent.provider === 'magnific' &&
-      agent.modelCapabilities?.supportsImageProcessing === true
-    )
-  }
-  if (role === 'image_analyser') {
-    return agent.modelCapabilities?.supportsVision === true
-  }
-  if (role === 'researcher') {
-    return agent.modelCapabilities?.supportsWebSearch === true
-  }
-  return true
 }
 
 function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorModalProps) {
@@ -96,50 +49,46 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
   const [name, setName] = useState(meeting?.name ?? '')
   const [task, setTask] = useState(meeting?.task ?? '')
   const [chatType, setChatType] = useState<ChatType>(meeting?.chatType ?? 'informational')
-  const [agentRoles, setAgentRoles] = useState<Record<string, ChatAgentRole>>(() =>
-    Object.fromEntries(
-      availableAgents.map((agent) => [
-        agent.id,
-        meeting?.agentRoles[agent.id] ?? agent.defaultChatRole,
-      ]),
-    ),
-  )
   const [selectedIds, setSelectedIds] = useState(() =>
     meeting?.agents.map((agent) => agent.id) ??
     agents.slice(0, 5).map((agent) => agent.id),
   )
-  const [facilitatorId, setFacilitatorId] = useState(
-    meeting?.facilitatorId ?? availableAgents[0]?.id ?? '',
+  const [orchestratorId, setOrchestratorId] = useState(
+    () =>
+      meeting?.agents.find((agent) => meeting?.agentRoles[agent.id] === 'director')?.id ??
+      availableAgents.find(
+        (agent) => agent.provider !== 'magnific' || isDecisionRoutingAgent(agent),
+      )?.id ??
+      '',
   )
   const [selectionError, setSelectionError] = useState('')
   const selectedAgents = useMemo(
     () => availableAgents.filter((agent) => selectedIds.includes(agent.id)),
     [availableAgents, selectedIds],
   )
-  const advisors = selectedAgents.filter((agent) => agentRoles[agent.id] === 'advisor')
-  const orchestrators = selectedAgents.filter(
-    (agent) => agentRoles[agent.id] === 'director',
+  const orchestratorOptions = selectedAgents.filter(
+    (agent) => agent.provider !== 'magnific' || isDecisionRoutingAgent(agent),
   )
-  const duplicateSpecialistRoles = selectedAgents.some(
-    (agent, index) =>
-      agentRoles[agent.id] !== 'advisor' &&
-      selectedAgents.findIndex(
-        (candidate) => agentRoles[candidate.id] === agentRoles[agent.id],
-      ) !== index,
+  const activeOrchestratorId = orchestratorOptions.some(
+    (agent) => agent.id === orchestratorId,
   )
-  const incompatibleRoleAssignments = selectedAgents.some(
-    (agent) => !canAssignRole(agent, agentRoles[agent.id]),
+    ? orchestratorId
+    : orchestratorOptions[0]?.id ?? ''
+  const fallbackAgentId =
+    selectedAgents.find(
+      (agent) =>
+        agent.id !== activeOrchestratorId && isTextGenerationAgent(agent),
+    )?.id ??
+    selectedAgents[0]?.id ??
+    ''
+  const hasTextContributor = selectedAgents.some(
+    (agent) => agent.id !== activeOrchestratorId && isTextGenerationAgent(agent),
   )
-  const activeFacilitatorId = advisors.some((agent) => agent.id === facilitatorId)
-    ? facilitatorId
-    : (advisors[0]?.id ?? '')
   const canSave =
     name.trim().length > 0 &&
-    selectedAgents.length > 0 &&
-    advisors.length > 0 &&
-    orchestrators.length === 1 &&
-    !duplicateSpecialistRoles &&
-    !incompatibleRoleAssignments
+    selectedAgents.length >= 2 &&
+    Boolean(activeOrchestratorId) &&
+    hasTextContributor
 
   function toggleAgent(id: string) {
     if (selectedIds.includes(id)) {
@@ -152,16 +101,12 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
       return
     }
     setSelectedIds([...selectedIds, id])
-    const agent = availableAgents.find((candidate) => candidate.id === id)
-    if (agent) {
-      setAgentRoles((current) => ({ ...current, [id]: agent.defaultChatRole }))
-    }
     setSelectionError('')
   }
 
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!name.trim() || selectedAgents.length === 0 || advisors.length === 0) {
+    if (!name.trim() || selectedAgents.length < 2 || !activeOrchestratorId) {
       return
     }
     onSave({
@@ -170,9 +115,12 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
       chatType,
       agents: selectedAgents,
       agentRoles: Object.fromEntries(
-        selectedAgents.map((agent) => [agent.id, agentRoles[agent.id] ?? 'advisor']),
+        selectedAgents.map((agent) => [
+          agent.id,
+          agent.id === activeOrchestratorId ? 'director' : 'advisor',
+        ]),
       ),
-      facilitatorId: activeFacilitatorId,
+      facilitatorId: fallbackAgentId,
     })
   }
 
@@ -204,8 +152,8 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
         </label>
         <p className="field-hint">
           {chatType === 'informational'
-            ? 'Advisors answer directly without a facilitator summary. Start with @{advisor name} to ask one advisor.'
-            : 'Build a document through discussion, then preview and export it as a PDF.'}
+            ? 'The Orchestrator routes each message to agents based on their capabilities. Start with @{agent name} to address one agent directly.'
+            : 'Build a document through agent contributions, then preview and export it as a PDF.'}
         </p>
         <label className="modal-field">
           {chatType === 'document'
@@ -234,11 +182,6 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
             <div className="participant-list">
               {availableAgents.map((agent) => {
                 const selected = selectedIds.includes(agent.id)
-                const assignedRoles = new Set(
-                  selectedAgents
-                    .filter((selectedAgent) => selectedAgent.id !== agent.id)
-                    .map((selectedAgent) => agentRoles[selectedAgent.id]),
-                )
                 return (
                   <div className="participant-option" key={agent.id}>
                     <label className="participant-choice">
@@ -253,37 +196,17 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
                       <span className="participant-description">
                         <strong>{agent.name || 'Unnamed agent'}</strong>
                         <span>{agent.role} · {providerLabel(agent.provider)}</span>
+                        {selected && (
+                          <span aria-label="Model capabilities" className="model-capability-list">
+                            {modelCapabilityLabels(agent.modelCapabilities).length > 0
+                              ? modelCapabilityLabels(agent.modelCapabilities).map((capability) => (
+                                  <span key={capability}>{capability}</span>
+                                ))
+                              : <span>Text only</span>}
+                          </span>
+                        )}
                       </span>
                     </label>
-                    {selected && (
-                      <select
-                        aria-label={`${agent.name} chat role`}
-                        className="participant-role-select"
-                        onChange={(event) => {
-                          const role = event.target.value
-                          if (isChatAgentRole(role)) {
-                            setAgentRoles((current) => ({
-                              ...current,
-                              [agent.id]: role,
-                            }))
-                          }
-                        }}
-                        value={agentRoles[agent.id] ?? 'advisor'}
-                      >
-                        {CHAT_AGENT_ROLES.map((role) => (
-                          <option
-                            disabled={
-                              (role !== 'advisor' && assignedRoles.has(role)) ||
-                              !canAssignRole(agent, role)
-                            }
-                            key={role}
-                            value={role}
-                          >
-                            {chatRoleLabel(role)}
-                          </option>
-                        ))}
-                      </select>
-                    )}
                   </div>
                 )
               })}
@@ -291,93 +214,51 @@ function MeetingEditorModal({ agents, meeting, onClose, onSave }: MeetingEditorM
           )}
         </fieldset>
         {selectionError && <p className="form-error" role="alert">{selectionError}</p>}
-        {selectedAgents.length > 0 && advisors.length === 0 && (
+        {selectedAgents.length < 2 && (
           <p className="form-error" role="alert">
-            Assign at least one selected agent the Meeting Member role to answer chat messages.
+            Select at least two agents: one Orchestrator and one agent to answer.
           </p>
         )}
-        {selectedAgents.length > 0 && orchestrators.length !== 1 && (
+        {selectedAgents.length >= 2 && !hasTextContributor && (
           <p className="form-error" role="alert">
-            Assign exactly one selected agent the Orchestrator role.
+            Select at least one text-capable agent besides the Orchestrator to answer chat messages.
           </p>
         )}
-        {duplicateSpecialistRoles && (
+        {orchestratorOptions.length > 0 && (
+          <label className="modal-field">
+            Orchestrator
+            <select
+              onChange={(event) => setOrchestratorId(event.target.value)}
+              value={activeOrchestratorId}
+            >
+              {orchestratorOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>{agent.name}</option>
+              ))}
+            </select>
+            <span className="field-hint">
+              {selectedAgents.some(
+                (agent) =>
+                  agent.id === activeOrchestratorId &&
+                  isDecisionRoutingAgent(agent),
+              )
+                ? 'Gemini Decision 1 uses OpenRouter’s structured Decisions API to select agents; it does not write chat replies.'
+                : 'The Orchestrator routes each request to agents based on their model capabilities.'}
+            </span>
+          </label>
+        )}
+        {orchestratorOptions.length === 0 && selectedAgents.length > 0 && (
           <p className="form-error" role="alert">
-            Each specialist role can be assigned to only one agent in a boardroom.
+            Select a non-Magnific agent to act as the Orchestrator.
           </p>
         )}
-        {incompatibleRoleAssignments && (
-          <p className="form-error" role="alert">
-            A selected role requires a compatible provider and model. Choose a capable model in the agent profile first.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'director') && (
+        {selectedAgents.some(
+          (agent) => agent.modelCapabilities?.supportsImageProcessing === true,
+        ) && (
           <p className="field-hint">
-            The Orchestrator routes each message to the smallest effective sequence of up to three agents.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'image_processor') && (
-          <p className="field-hint">
-            Image processing uses Magnific and requires MAGNIFIC_API_KEY on the server.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'image_generator') && (
-          <p className="field-hint">
-            Image generation requires a model that supports image output, including Magnific Mystic models.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'image_analyser') && (
-          <p className="field-hint">
-            Image analysis requires a model that supports image input.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'report_formatter') && (
-          <p className="field-hint">
-            The Document Formatter applies its profile’s style instructions to generated reports.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'researcher') && (
-          <p className="field-hint">
-            Researcher uses provider-native web search when the assigned model supports it.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'facilitator') && (
-          <p className="field-hint">
-            The Facilitator asks concise clarifying questions when the goal or scope is unclear.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'critic') && (
-          <p className="field-hint">
-            The Critic identifies risks and weak assumptions, and suggests mitigations.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'synthesizer') && (
-          <p className="field-hint">
-            The Synthesizer consolidates contributions without introducing new domain opinions.
-          </p>
-        )}
-        {selectedAgents.some((agent) => agentRoles[agent.id] === 'executor') && (
-          <p className="field-hint">
-            The Executor turns agreed decisions into concrete, ready-to-use artifacts.
+            Image processing is available from capable services such as Magnific; no fixed role assignment is needed.
           </p>
         )}
 
-        {chatType === 'document' && (
-          <div className="form-grid meeting-options">
-            <label className="modal-field">
-              Facilitator
-              <select
-                disabled={selectedAgents.length === 0}
-                onChange={(event) => setFacilitatorId(event.target.value)}
-                value={activeFacilitatorId}
-              >
-                {advisors.map((agent) => (
-                  <option key={agent.id} value={agent.id}>{agent.name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        )}
         <p className="field-hint">
           Saving agent edits updates their settings in existing boardrooms.
         </p>

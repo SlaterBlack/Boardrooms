@@ -1,4 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import {
+  isBoardroomChatAttachment,
+  MAX_BOARDROOM_CHAT_ATTACHMENTS,
+  MAX_BOARDROOM_CHAT_MEMORY_LENGTH,
+} from '../shared/boardroom'
 import type {
   AgentConfig,
   BoardroomChatMessage,
@@ -18,9 +23,11 @@ import MeetingEditorModal, {
 import MeetingRoom from './components/MeetingRoom'
 import { createId } from './createId'
 import {
+  isDecisionRoutingAgent,
   isBoardroomImageSource,
+  isTextGenerationAgent,
+  modelCapabilityLabels,
   normalizeChatAgentRoles,
-  normalizeDefaultChatRole,
   normalizeModelCapabilities,
 } from '../shared/chat'
 import discussItLogo from './assets/DiscussIt_64.png'
@@ -37,7 +44,6 @@ const DEFAULT_AGENTS: AgentConfig[] = [
     id: 'strategy-advisor',
     name: 'Strategy advisor',
     role: 'Strategy & market perspective',
-    defaultChatRole: 'advisor',
     provider: 'openai',
     model: 'gpt-6.2-sol',
     knowledge: 'Market strategy, product positioning, and long-term planning.',
@@ -48,7 +54,6 @@ const DEFAULT_AGENTS: AgentConfig[] = [
     id: 'risk-advisor',
     name: 'Risk advisor',
     role: 'Risk & governance',
-    defaultChatRole: 'advisor',
     provider: 'anthropic',
     model: 'claude-sonnet-5-5',
     knowledge: 'Organizational risk, governance, and responsible decision-making.',
@@ -92,6 +97,7 @@ function normalizeAgent(value: unknown): AgentConfig | null {
     typeof value.role !== 'string' ||
     (value.provider !== 'openai' &&
       value.provider !== 'anthropic' &&
+      value.provider !== 'gemini' &&
       value.provider !== 'openrouter' &&
       value.provider !== 'magnific') ||
     typeof value.model !== 'string'
@@ -99,22 +105,22 @@ function normalizeAgent(value: unknown): AgentConfig | null {
     return null
   }
 
-  const defaultChatRole = normalizeDefaultChatRole(value.defaultChatRole)
   const modelCapabilities = normalizeModelCapabilities(value.modelCapabilities)
-  if (!defaultChatRole || !modelCapabilities) return null
+  if (!modelCapabilities) return null
   const provider: Provider =
-    value.provider === 'anthropic'
-      ? 'anthropic'
-      : value.provider === 'openrouter'
-        ? 'openrouter'
-        : value.provider === 'magnific'
-          ? 'magnific'
-          : 'openai'
+    value.provider === 'gemini'
+      ? 'gemini'
+      : value.provider === 'anthropic'
+        ? 'anthropic'
+        : value.provider === 'openrouter'
+          ? 'openrouter'
+          : value.provider === 'magnific'
+            ? 'magnific'
+            : 'openai'
   return {
     id: value.id,
     name: value.name,
     role: value.role,
-    defaultChatRole,
     modelCapabilities,
     provider,
     model: value.model,
@@ -180,10 +186,31 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
       (message.agentName === undefined || typeof message.agentName === 'string') &&
       (message.agentRole === undefined || typeof message.agentRole === 'string') &&
       (message.imageUrl === undefined || isBoardroomImageSource(message.imageUrl)) &&
+      (message.attachments === undefined ||
+        (Array.isArray(message.attachments) &&
+          message.attachments.length <= MAX_BOARDROOM_CHAT_ATTACHMENTS &&
+          message.attachments.every(isBoardroomChatAttachment))) &&
       (message.role === 'user' ||
         (typeof message.agentId === 'string' &&
           typeof message.agentName === 'string')),
   )
+  const chatMemory =
+    value.chatMemory === undefined
+      ? undefined
+      : isRecord(value.chatMemory) &&
+          typeof value.chatMemory.summary === 'string' &&
+          value.chatMemory.summary.trim().length > 0 &&
+          value.chatMemory.summary.length <= MAX_BOARDROOM_CHAT_MEMORY_LENGTH &&
+          typeof value.chatMemory.throughMessageCount === 'number' &&
+          Number.isSafeInteger(value.chatMemory.throughMessageCount) &&
+          value.chatMemory.throughMessageCount >= 0 &&
+          value.chatMemory.throughMessageCount <= chatMessages.length
+        ? {
+            summary: value.chatMemory.summary,
+            throughMessageCount: value.chatMemory.throughMessageCount,
+          }
+        : null
+  if (value.chatMemory !== undefined && !chatMemory) return null
   const rawReports = value.reports === undefined ? [] : value.reports
   if (!Array.isArray(rawReports)) return null
   const reports = rawReports.filter(
@@ -200,9 +227,21 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
   const meetingAgents = agents.filter(
     (agent): agent is AgentConfig => agent !== null,
   )
+  const preferredDirectorId =
+    meetingAgents.length >= 2
+      ? meetingAgents.find(
+          (agent) =>
+            (isTextGenerationAgent(agent) || isDecisionRoutingAgent(agent)) &&
+            isRecord(value.agentRoles) &&
+            value.agentRoles[agent.id] === 'director',
+        )?.id ??
+        meetingAgents.find(isTextGenerationAgent)?.id ??
+        meetingAgents.find(isDecisionRoutingAgent)?.id
+      : undefined
   const agentRoles = normalizeChatAgentRoles(
     meetingAgents.map((agent) => agent.id),
     value.agentRoles,
+    preferredDirectorId,
   )
   if (!agentRoles) return null
   const wasRunning = interruptRunning && value.status === 'running'
@@ -222,6 +261,7 @@ function normalizeMeeting(value: unknown, interruptRunning = true): Meeting | nu
     status: wasRunning ? 'interrupted' : (value.status as MeetingStatus),
     transcript,
     chatMessages,
+    ...(chatMemory ? { chatMemory } : {}),
     reports,
     synthesis: typeof value.synthesis === 'string' ? value.synthesis : '',
     error: wasRunning
@@ -346,6 +386,7 @@ async function readProviderAvailability(signal?: AbortSignal): Promise<ProviderA
     !isRecord(result.providers) ||
     typeof result.providers.openai !== 'boolean' ||
     typeof result.providers.anthropic !== 'boolean' ||
+    typeof result.providers.gemini !== 'boolean' ||
     typeof result.providers.openrouter !== 'boolean' ||
     typeof result.providers.magnific !== 'boolean'
   ) {
@@ -354,6 +395,7 @@ async function readProviderAvailability(signal?: AbortSignal): Promise<ProviderA
   return {
     openai: result.providers.openai,
     anthropic: result.providers.anthropic,
+    gemini: result.providers.gemini,
     openrouter: result.providers.openrouter,
     magnific: result.providers.magnific,
   }
@@ -365,37 +407,12 @@ function providerLabel(provider: Provider): string {
       return 'OpenAI'
     case 'anthropic':
       return 'Anthropic'
+    case 'gemini':
+      return 'Gemini'
     case 'openrouter':
       return 'OpenRouter'
     case 'magnific':
       return 'Magnific'
-  }
-}
-
-function chatRoleLabel(role: AgentConfig['defaultChatRole']): string {
-  switch (role) {
-    case 'advisor':
-      return 'Meeting Member'
-    case 'director':
-      return 'Orchestrator'
-    case 'researcher':
-      return 'Researcher'
-    case 'facilitator':
-      return 'Facilitator'
-    case 'critic':
-      return 'Critic'
-    case 'synthesizer':
-      return 'Synthesizer'
-    case 'image_processor':
-      return 'Image Processor'
-    case 'image_generator':
-      return 'Image Generator'
-    case 'image_analyser':
-      return 'Image Analyser'
-    case 'report_formatter':
-      return 'Document Formatter'
-    case 'executor':
-      return 'Executor'
   }
 }
 
@@ -884,13 +901,14 @@ function App() {
               providers &&
               !providers.openai &&
               !providers.anthropic &&
+              !providers.gemini &&
               !providers.openrouter && (
               <div className="notice setup-notice">
                 <strong>Connect an AI provider to start a chat.</strong>
                 <span>
-                  Add an <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, or
-                  <code> OPENROUTER_API_KEY</code> to the server’s <code>.env</code> file,
-                  then restart DiscussIt.
+                  Add an <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>,
+                  <code> GEMINI_API_KEY</code>, or <code>OPENROUTER_API_KEY</code> to the
+                  server’s <code>.env</code> file, then restart DiscussIt.
                 </span>
               </div>
             )}
@@ -1099,12 +1117,16 @@ function AgentCard({ agent, index, onEdit, onDelete }: AgentCardProps) {
       <div className="agent-profile-heading">
         <span className="profile-avatar">{agent.name.trim().charAt(0).toUpperCase() || 'A'}</span>
         <div className="profile-identity">
-          <span className="profile-index">ADVISOR 0{index + 1}</span>
+          <span className="profile-index">AGENT 0{index + 1}</span>
           <h2>{agent.name}</h2>
           <p>{agent.role}</p>
-          <span className="agent-default-role">
-            Default boardroom role · {chatRoleLabel(agent.defaultChatRole)}
-          </span>
+          <div aria-label="Model capabilities" className="model-capability-list">
+            {modelCapabilityLabels(agent.modelCapabilities).length > 0
+              ? modelCapabilityLabels(agent.modelCapabilities).map((capability) => (
+                  <span key={capability}>{capability}</span>
+                ))
+              : <span>Text only</span>}
+          </div>
         </div>
         <button className="secondary-button" onClick={onEdit} type="button">Edit</button>
       </div>

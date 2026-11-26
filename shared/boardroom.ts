@@ -1,10 +1,9 @@
-export type Provider = 'openai' | 'anthropic' | 'openrouter' | 'magnific'
+export type Provider = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'magnific'
 
 export interface AgentConfig {
   id: string
   name: string
   role: string
-  defaultChatRole: ChatAgentRole
   provider: Provider
   model: string
   modelCapabilities?: ModelCapabilities
@@ -50,6 +49,51 @@ export interface BoardroomChatMessage {
   agentName?: string
   agentRole?: string
   imageUrl?: string
+  attachments?: BoardroomChatAttachment[]
+}
+
+export const MAX_BOARDROOM_CHAT_ATTACHMENTS = 3
+export const MAX_BOARDROOM_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024
+export const MAX_BOARDROOM_CHAT_ATTACHMENT_TEXT_LENGTH = 12_000
+export const MAX_BOARDROOM_CHAT_ATTACHMENT_CONTEXT_LENGTH = 18_000
+
+export interface BoardroomChatAttachment {
+  id: string
+  name: string
+  size: number
+  contentType: string
+  url: string
+  extractedText: string
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function isBoardroomChatAttachment(
+  value: unknown,
+): value is BoardroomChatAttachment {
+  if (!isRecord(value)) return false
+  const attachment = value
+  return (
+    typeof attachment.id === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      attachment.id,
+    ) &&
+    typeof attachment.name === 'string' &&
+    attachment.name.trim().length > 0 &&
+    attachment.name.length <= 160 &&
+    typeof attachment.size === 'number' &&
+    Number.isSafeInteger(attachment.size) &&
+    attachment.size > 0 &&
+    attachment.size <= MAX_BOARDROOM_CHAT_ATTACHMENT_BYTES &&
+    typeof attachment.contentType === 'string' &&
+    typeof attachment.url === 'string' &&
+    attachment.url.startsWith(`/api/boardrooms/files/${attachment.id}?name=`) &&
+    typeof attachment.extractedText === 'string' &&
+    attachment.extractedText.length > 0 &&
+    attachment.extractedText.length <= MAX_BOARDROOM_CHAT_ATTACHMENT_TEXT_LENGTH
+  )
 }
 
 export interface BoardroomReport {
@@ -58,6 +102,13 @@ export interface BoardroomReport {
   type: BoardroomReportType
   content: string
   createdAt: string
+}
+
+export const MAX_BOARDROOM_CHAT_MEMORY_LENGTH = 3_000
+
+export interface BoardroomChatMemory {
+  summary: string
+  throughMessageCount: number
 }
 
 export interface Meeting {
@@ -75,6 +126,7 @@ export interface Meeting {
   status: MeetingStatus
   transcript: BoardroomTurn[]
   chatMessages: BoardroomChatMessage[]
+  chatMemory?: BoardroomChatMemory
   reports: BoardroomReport[]
   synthesis: string
   error: string
@@ -101,7 +153,6 @@ export interface BoardroomReportInput {
   agents: AgentConfig[]
   agentRoles?: Record<string, ChatAgentRole>
   facilitatorId: string
-  formatterId?: string
 }
 
 export type BoardroomEvent =
@@ -109,14 +160,28 @@ export type BoardroomEvent =
   | { type: 'route_start'; agentId: string; agentName: string }
   | { type: 'route_complete'; agentId: string; agentName: string }
   | { type: 'turn_start'; agentId: string; agentName: string; round: number }
+  | {
+      type: 'turn_delta'
+      turnId: string
+      agentId: string
+      agentName: string
+      agentRole: string
+      round: number
+      delta: string
+    }
   | { type: 'turn_complete'; turn: BoardroomTurn }
-  | { type: 'synthesis_start'; agentId: string; agentName: string }
+  | { type: 'synthesis_start'; messageId: string; agentId: string; agentName: string }
+  | { type: 'synthesis_delta'; messageId: string; delta: string }
   | {
       type: 'synthesis_complete'
+      messageId: string
       agentId: string
       agentName: string
       content: string
     }
+  | { type: 'chat_memory_start' }
+  | { type: 'chat_memory_update'; summary: string }
+  | { type: 'chat_memory_error'; message: string }
   | { type: 'error'; message: string }
   | { type: 'done' }
 
@@ -131,6 +196,7 @@ export type BoardroomReportEvent =
 export interface ProviderAvailability {
   openai: boolean
   anthropic: boolean
+  gemini: boolean
   openrouter: boolean
   magnific: boolean
 }
@@ -139,6 +205,7 @@ export interface ProviderModel {
   id: string
   name: string
   isFree?: boolean
+  supportsDecisionRouting?: boolean
   supportsImageGeneration?: boolean
   supportsImageProcessing?: boolean
   supportsVision?: boolean
@@ -146,6 +213,7 @@ export interface ProviderModel {
 }
 
 export interface ModelCapabilities {
+  supportsDecisionRouting?: boolean
   supportsImageGeneration?: boolean
   supportsImageProcessing?: boolean
   supportsVision?: boolean

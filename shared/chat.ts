@@ -31,6 +31,21 @@ export function isChatAgentRole(value: unknown): value is ChatAgentRole {
   return CHAT_AGENT_ROLES.some((role) => role === value)
 }
 
+export function isDecisionRoutingAgent(
+  agent: Pick<AgentConfig, 'provider' | 'model'>,
+): boolean {
+  return (
+    agent.provider === 'openrouter' &&
+    agent.model === 'google/gemini-decision-1'
+  )
+}
+
+export function isTextGenerationAgent(
+  agent: Pick<AgentConfig, 'provider' | 'model'>,
+): boolean {
+  return agent.provider !== 'magnific' && !isDecisionRoutingAgent(agent)
+}
+
 export function isSecureImageUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > 2_048) return false
   try {
@@ -52,51 +67,49 @@ export function isBoardroomImageSource(value: unknown): value is string {
 export function normalizeChatAgentRoles(
   agentIds: string[],
   value: unknown,
+  preferredDirectorId?: string,
 ): Record<string, ChatAgentRole> | null {
+  let assignments: Record<string, unknown>
   if (value === undefined) {
-    const roles: Array<[string, ChatAgentRole]> = agentIds.map((agentId) => [
-      agentId,
-      'advisor',
-    ])
-    return Object.fromEntries(roles)
+    assignments = Object.fromEntries(agentIds.map((agentId) => [agentId, 'advisor']))
+  } else {
+    if (!isRecord(value)) return null
+    assignments = value
+    if (
+      Object.keys(assignments).length !== agentIds.length ||
+      agentIds.some((agentId) => !isChatAgentRole(assignments[agentId])) ||
+      Object.keys(assignments).some((agentId) => !agentIds.includes(agentId))
+    ) {
+      return null
+    }
   }
-  if (!isRecord(value)) return null
-  const assignments = value
-  if (
-    Object.keys(assignments).length !== agentIds.length ||
-    agentIds.some((agentId) => !isChatAgentRole(assignments[agentId])) ||
-    Object.keys(assignments).some((agentId) => !agentIds.includes(agentId))
-  ) {
+  const directorIds = Object.entries(assignments)
+    .filter(([, role]) => role === 'director')
+    .map(([agentId]) => agentId)
+  if (directorIds.length > 1 || (directorIds.length === 1 && agentIds.length < 2)) {
     return null
   }
 
-  const entries: Array<[string, ChatAgentRole]> = []
-  for (const agentId of agentIds) {
-    const role = assignments[agentId]
-    if (!isChatAgentRole(role)) return null
-    entries.push([agentId, role])
-  }
-  const roles = Object.fromEntries(entries)
-  const specializedRoles = Object.values(roles).filter((role) => role !== 'advisor')
-  if (
-    new Set(specializedRoles).size !== specializedRoles.length ||
-    !Object.values(roles).includes('advisor')
-  ) {
-    return null
-  }
-
-  return roles
-}
-
-export function normalizeDefaultChatRole(value: unknown): ChatAgentRole | null {
-  if (value === undefined) return 'advisor'
-  return isChatAgentRole(value) ? value : null
+  const directorId =
+    (preferredDirectorId && agentIds.includes(preferredDirectorId)
+      ? preferredDirectorId
+      : directorIds[0]) ??
+    (agentIds.length >= 2 ? agentIds[0] : undefined)
+  return Object.fromEntries(
+    agentIds.map(
+      (agentId): [string, ChatAgentRole] => [
+        agentId,
+        agentId === directorId ? 'director' : 'advisor',
+      ],
+    ),
+  )
 }
 
 export function normalizeModelCapabilities(value: unknown): ModelCapabilities | null {
   if (value === undefined) return {}
   if (!isRecord(value)) return null
   const keys = [
+    'supportsDecisionRouting',
     'supportsImageGeneration',
     'supportsImageProcessing',
     'supportsVision',
@@ -110,6 +123,16 @@ export function normalizeModelCapabilities(value: unknown): ModelCapabilities | 
       typeof value[key] === 'boolean' ? [[key, value[key]]] : [],
     ),
   )
+}
+
+export function modelCapabilityLabels(capabilities?: ModelCapabilities): string[] {
+  const labels: string[] = []
+  if (capabilities?.supportsDecisionRouting) labels.push('Decision routing')
+  if (capabilities?.supportsVision) labels.push('Image input')
+  if (capabilities?.supportsImageGeneration) labels.push('Image generation')
+  if (capabilities?.supportsImageProcessing) labels.push('Image processing')
+  if (capabilities?.supportsWebSearch) labels.push('Web search')
+  return labels
 }
 
 function removeMention(

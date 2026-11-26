@@ -47,6 +47,25 @@ function readEvent(value: unknown): BoardroomEvent {
       round: value.round,
     }
   }
+  if (
+    value.type === 'turn_delta' &&
+    typeof value.turnId === 'string' &&
+    typeof value.agentId === 'string' &&
+    typeof value.agentName === 'string' &&
+    typeof value.agentRole === 'string' &&
+    typeof value.round === 'number' &&
+    typeof value.delta === 'string'
+  ) {
+    return {
+      type: value.type,
+      turnId: value.turnId,
+      agentId: value.agentId,
+      agentName: value.agentName,
+      agentRole: value.agentRole,
+      round: value.round,
+      delta: value.delta,
+    }
+  }
   if (value.type === 'turn_complete' && isRecord(value.turn)) {
     const turn = value.turn
     if (
@@ -72,27 +91,47 @@ function readEvent(value: unknown): BoardroomEvent {
   }
   if (
     value.type === 'synthesis_start' &&
+    typeof value.messageId === 'string' &&
     typeof value.agentId === 'string' &&
     typeof value.agentName === 'string'
   ) {
     return {
       type: value.type,
+      messageId: value.messageId,
       agentId: value.agentId,
       agentName: value.agentName,
     }
   }
   if (
+    value.type === 'synthesis_delta' &&
+    typeof value.messageId === 'string' &&
+    typeof value.delta === 'string'
+  ) {
+    return { type: value.type, messageId: value.messageId, delta: value.delta }
+  }
+  if (
     value.type === 'synthesis_complete' &&
+    typeof value.messageId === 'string' &&
     typeof value.agentId === 'string' &&
     typeof value.agentName === 'string' &&
     typeof value.content === 'string'
   ) {
     return {
       type: value.type,
+      messageId: value.messageId,
       agentId: value.agentId,
       agentName: value.agentName,
       content: value.content,
     }
+  }
+  if (value.type === 'chat_memory_start') {
+    return { type: value.type }
+  }
+  if (value.type === 'chat_memory_update' && typeof value.summary === 'string') {
+    return { type: value.type, summary: value.summary }
+  }
+  if (value.type === 'chat_memory_error' && typeof value.message === 'string') {
+    return { type: value.type, message: value.message }
   }
   if (value.type === 'error' && typeof value.message === 'string') {
     return { type: value.type, message: value.message }

@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 interface ModalProps {
   title: string
@@ -17,7 +18,7 @@ function Modal({ title, onClose, children, className }: ModalProps) {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
-  return (
+  return createPortal(
     <div
       className="modal-backdrop"
       onMouseDown={(event) => {
@@ -46,7 +47,8 @@ function Modal({ title, onClose, children, className }: ModalProps) {
         </header>
         {children}
       </section>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

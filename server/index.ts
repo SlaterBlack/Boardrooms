@@ -21,6 +21,12 @@ import {
   parseBoardroomReportInput,
   runBoardroom,
 } from './boardroom.ts'
+import {
+  AttachmentError,
+  persistChatAttachment,
+  readChatAttachment,
+  sanitizeChatAttachmentName,
+} from './attachments.ts'
 import { listProviderModels, ProviderModelsError } from './models.ts'
 import {
   MagnificError,
@@ -28,7 +34,12 @@ import {
   parseMagnificUpscaleInput,
   upscaleWithMagnific,
 } from './magnific.ts'
-import { readGeneratedImage } from './generatedImages.ts'
+import {
+  GeneratedImageError,
+  persistRemoteImage,
+  persistUploadedImage,
+  readGeneratedImage,
+} from './generatedImages.ts'
 import {
   BoardroomStateInputError,
   importBoardroomState,
@@ -76,6 +87,8 @@ function providerKeyName(provider: Provider): string {
       return 'OPENAI_API_KEY'
     case 'anthropic':
       return 'ANTHROPIC_API_KEY'
+    case 'gemini':
+      return 'GEMINI_API_KEY'
     case 'openrouter':
       return 'OPENROUTER_API_KEY'
     case 'magnific':
@@ -228,6 +241,7 @@ app.get('/api/providers', (_request, response) => {
   const availability: ProviderAvailability = {
     openai: Boolean(process.env.OPENAI_API_KEY?.trim()),
     anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
+    gemini: Boolean(process.env.GEMINI_API_KEY?.trim()),
     openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
     magnific: Boolean(process.env.MAGNIFIC_API_KEY?.trim()),
   }
@@ -243,6 +257,98 @@ app.get('/api/boardrooms/runs/:meetingId', (request, response) => {
   response
     .set('Cache-Control', 'no-store')
     .json({ active: (activeBoardroomRuns.get(meetingId) ?? 0) > 0 })
+})
+
+app.get('/api/boardrooms/images/generated/:file', async (request, response) => {
+  try {
+    const image = await readGeneratedImage(request.params.file)
+    if (!image) {
+      response.status(404).json({ error: 'Generated image not found.' })
+      return
+    }
+    response
+      .set('Cache-Control', 'private, max-age=86400')
+      .set('Content-Type', image.contentType)
+      .set('X-Content-Type-Options', 'nosniff')
+      .send(image.data)
+  } catch (error) {
+    console.error('Could not read a stored boardroom image.', error)
+    response.status(500).json({ error: 'Could not load the boardroom image.' })
+  }
+})
+
+app.post('/api/boardrooms/images/uploads', async (request, response) => {
+  try {
+    const imageUrl = await persistUploadedImage(request.body?.imageDataUrl)
+    response.status(201).json({ imageUrl })
+  } catch (error) {
+    if (error instanceof GeneratedImageError) {
+      response.status(400).json({ error: error.message })
+      return
+    }
+    console.error('Could not save an uploaded boardroom image.', error)
+    response.status(500).json({ error: 'Could not save the image attachment.' })
+  }
+})
+
+app.post(
+  '/api/boardrooms/files/uploads',
+  express.raw({ type: 'application/octet-stream', limit: '10mb' }),
+  async (request, response) => {
+    let originalName: string
+    try {
+      const encodedName = request.get('x-file-name')
+      if (!encodedName) throw new AttachmentError('Choose a supported file to attach.')
+      originalName = decodeURIComponent(encodedName)
+    } catch (error) {
+      response.status(400).json({
+        error:
+          error instanceof AttachmentError
+            ? error.message
+            : 'The selected file name is invalid.',
+      })
+      return
+    }
+
+    try {
+      const attachment = await persistChatAttachment(originalName, request.body)
+      response.status(201).json({ attachment })
+    } catch (error) {
+      if (error instanceof AttachmentError) {
+        response.status(400).json({ error: error.message })
+        return
+      }
+      console.error('Could not save an uploaded boardroom file.', error)
+      response.status(500).json({ error: 'Could not save the file attachment.' })
+    }
+  },
+)
+
+app.get('/api/boardrooms/files/:id', async (request, response) => {
+  try {
+    const file = await readChatAttachment(request.params.id)
+    if (!file) {
+      response.status(404).json({ error: 'The attached file was not found.' })
+      return
+    }
+    const requestedName =
+      typeof request.query.name === 'string' ? request.query.name : 'attachment'
+    const safeName = sanitizeChatAttachmentName(requestedName)
+    const fallbackName =
+      safeName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'attachment'
+    response
+      .set('Cache-Control', 'private, max-age=86400')
+      .set('Content-Type', 'application/octet-stream')
+      .set(
+        'Content-Disposition',
+        `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+      )
+      .set('X-Content-Type-Options', 'nosniff')
+      .send(file)
+  } catch (error) {
+    console.error('Could not read a stored boardroom attachment.', error)
+    response.status(500).json({ error: 'Could not load the attached file.' })
+  }
 })
 
 app.post('/api/boardrooms/images/upscale', async (request, response) => {
@@ -269,26 +375,15 @@ app.post('/api/boardrooms/images/upscale', async (request, response) => {
     if (!response.writableEnded) controller.abort()
   })
 
-  app.get('/api/boardrooms/images/generated/:file', async (request, response) => {
-    try {
-      const image = await readGeneratedImage(request.params.file)
-      if (!image) {
-        response.status(404).json({ error: 'Generated image not found.' })
-        return
-      }
-      response
-        .set('Cache-Control', 'private, max-age=86400')
-        .set('Content-Type', image.contentType)
-        .set('X-Content-Type-Options', 'nosniff')
-        .send(image.data)
-    } catch (error) {
-      console.error('Could not read a generated image.', error)
-      response.status(500).json({ error: 'Could not load the generated image.' })
-    }
-  })
-
   try {
-    const imageUrl = await upscaleWithMagnific(input, controller.signal)
+    const remoteUrl = await upscaleWithMagnific(input, controller.signal)
+    let imageUrl = remoteUrl
+    try {
+      imageUrl = await persistRemoteImage(remoteUrl, controller.signal)
+    } catch (cacheError) {
+      if (controller.signal.aborted) throw cacheError
+      console.warn('Could not cache Magnific upscaled image locally; using remote URL.', cacheError)
+    }
     if (!response.destroyed) response.json({ imageUrl })
   } catch (error) {
     if (controller.signal.aborted || response.destroyed) return
@@ -306,6 +401,7 @@ app.get('/api/providers/:provider/models', async (request, response) => {
   if (
     provider !== 'openai' &&
     provider !== 'anthropic' &&
+    provider !== 'gemini' &&
     provider !== 'openrouter' &&
     provider !== 'magnific'
   ) {
@@ -342,7 +438,10 @@ app.post('/api/boardrooms/run', async (request, response) => {
       input.agents
         .filter(
           (agent) =>
-            input.agentRoles?.[agent.id] !== 'image_processor' &&
+            !(
+              agent.provider === 'magnific' &&
+              agent.modelCapabilities?.supportsImageGeneration !== true
+            ) &&
             !process.env[providerKeyName(agent.provider)]?.trim(),
         )
         .map((agent) => agent.provider),
@@ -361,6 +460,7 @@ app.post('/api/boardrooms/run', async (request, response) => {
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
     'X-Content-Type-Options': 'nosniff',
+    'X-Accel-Buffering': 'no',
   })
 
   const controller = new AbortController()
@@ -412,7 +512,11 @@ app.post('/api/boardrooms/report', async (request, response) => {
   const missingProviders = [
     ...new Set(
       input.agents
-        .filter((agent) => !process.env[providerKeyName(agent.provider)]?.trim())
+        .filter(
+          (agent) =>
+            agent.provider !== 'magnific' &&
+            !process.env[providerKeyName(agent.provider)]?.trim(),
+        )
         .map((agent) => agent.provider),
     ),
   ]

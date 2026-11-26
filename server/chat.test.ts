@@ -10,7 +10,6 @@ const bonnie: AgentConfig = {
   id: 'bonnie',
   name: 'Bonnie Green',
   role: 'Environment-focused architect',
-  defaultChatRole: 'advisor',
   provider: 'openai',
   model: 'gpt-test',
   knowledge: '',
@@ -58,7 +57,6 @@ test('resolves a specialist agent mention', () => {
     ...bonnie,
     id: 'image-generator',
     name: 'Image Generator',
-    defaultChatRole: 'image_generator',
     modelCapabilities: { supportsImageGeneration: true },
   }
   const mention = resolveAgentMention(
@@ -70,9 +68,9 @@ test('resolves a specialist agent mention', () => {
   assert.equal(mention?.prompt, 'create a timber pavilion concept')
 })
 
-test('normalizes legacy advisor roles and rejects duplicate or missing advisor assignments', () => {
+test('normalizes legacy specialist roles to one Orchestrator and meeting members', () => {
   assert.deepEqual(normalizeChatAgentRoles(['bonnie', 'clyde'], undefined), {
-    bonnie: 'advisor',
+    bonnie: 'director',
     clyde: 'advisor',
   })
 
@@ -88,8 +86,16 @@ test('normalizes legacy advisor roles and rejects duplicate or missing advisor a
     }),
     null,
   )
-  assert.equal(
+  assert.deepEqual(
     normalizeChatAgentRoles(['bonnie'], { bonnie: 'report_formatter' }),
-    null,
+    { bonnie: 'advisor' },
+  )
+  assert.deepEqual(
+    normalizeChatAgentRoles(
+      ['magnific', 'bonnie'],
+      { magnific: 'director', bonnie: 'advisor' },
+      'bonnie',
+    ),
+    { magnific: 'advisor', bonnie: 'director' },
   )
 })

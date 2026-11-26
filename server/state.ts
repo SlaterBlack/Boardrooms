@@ -13,9 +13,15 @@ import type {
   Provider,
 } from '../shared/boardroom.ts'
 import {
+  isBoardroomChatAttachment,
+  MAX_BOARDROOM_CHAT_ATTACHMENTS,
+  MAX_BOARDROOM_CHAT_MEMORY_LENGTH,
+} from '../shared/boardroom.ts'
+import {
+  isDecisionRoutingAgent,
+  isTextGenerationAgent,
   isBoardroomImageSource,
   normalizeChatAgentRoles,
-  normalizeDefaultChatRole,
   normalizeModelCapabilities,
 } from '../shared/chat.ts'
 
@@ -55,6 +61,7 @@ function readAgent(value: unknown): AgentConfig | null {
     value.role.length > 120 ||
     (value.provider !== 'openai' &&
       value.provider !== 'anthropic' &&
+      value.provider !== 'gemini' &&
       value.provider !== 'openrouter' &&
       value.provider !== 'magnific') ||
     typeof value.model !== 'string' ||
@@ -70,15 +77,13 @@ function readAgent(value: unknown): AgentConfig | null {
     return null
   }
 
-  const defaultChatRole = normalizeDefaultChatRole(value.defaultChatRole)
   const modelCapabilities = normalizeModelCapabilities(value.modelCapabilities)
-  if (!defaultChatRole || !modelCapabilities) return null
+  if (!modelCapabilities) return null
   const provider: Provider = value.provider
   return {
     id: value.id,
     name: value.name,
     role: value.role,
-    defaultChatRole,
     modelCapabilities,
     provider,
     model: value.model,
@@ -133,7 +138,11 @@ function readChatMessage(value: unknown): BoardroomChatMessage | null {
       (typeof value.agentName !== 'string' || value.agentName.length > 80)) ||
     (value.agentRole !== undefined &&
       (typeof value.agentRole !== 'string' || value.agentRole.length > 120)) ||
-    (value.imageUrl !== undefined && !isBoardroomImageSource(value.imageUrl))
+    (value.imageUrl !== undefined && !isBoardroomImageSource(value.imageUrl)) ||
+    (value.attachments !== undefined &&
+      (!Array.isArray(value.attachments) ||
+        value.attachments.length > MAX_BOARDROOM_CHAT_ATTACHMENTS ||
+        value.attachments.some((attachment) => !isBoardroomChatAttachment(attachment))))
   ) {
     return null
   }
@@ -153,6 +162,11 @@ function readChatMessage(value: unknown): BoardroomChatMessage | null {
     ...(typeof value.agentName === 'string' ? { agentName: value.agentName } : {}),
     ...(typeof value.agentRole === 'string' ? { agentRole: value.agentRole } : {}),
     ...(isBoardroomImageSource(value.imageUrl) ? { imageUrl: value.imageUrl } : {}),
+    ...(Array.isArray(value.attachments)
+      ? {
+          attachments: value.attachments.filter(isBoardroomChatAttachment),
+        }
+      : {}),
   }
 }
 
@@ -253,12 +267,44 @@ function readMeeting(value: unknown): Meeting | null {
   ) {
     return null
   }
+  const normalizedChatMessages = chatMessages.filter(
+    (message): message is BoardroomChatMessage => message !== null,
+  )
+  const chatMemory =
+    value.chatMemory === undefined
+      ? undefined
+      : isRecord(value.chatMemory) &&
+          typeof value.chatMemory.summary === 'string' &&
+          value.chatMemory.summary.trim().length > 0 &&
+          value.chatMemory.summary.length <= MAX_BOARDROOM_CHAT_MEMORY_LENGTH &&
+          typeof value.chatMemory.throughMessageCount === 'number' &&
+          Number.isSafeInteger(value.chatMemory.throughMessageCount) &&
+          value.chatMemory.throughMessageCount >= 0 &&
+          value.chatMemory.throughMessageCount <= normalizedChatMessages.length
+        ? {
+            summary: value.chatMemory.summary,
+            throughMessageCount: value.chatMemory.throughMessageCount,
+          }
+        : null
+  if (value.chatMemory !== undefined && !chatMemory) return null
   const meetingAgents = agents.filter(
     (agent): agent is AgentConfig => agent !== null,
   )
+  const preferredDirectorId =
+    meetingAgents.length >= 2
+      ? meetingAgents.find(
+          (agent) =>
+            (isTextGenerationAgent(agent) || isDecisionRoutingAgent(agent)) &&
+            isRecord(value.agentRoles) &&
+            value.agentRoles[agent.id] === 'director',
+        )?.id ??
+        meetingAgents.find(isTextGenerationAgent)?.id ??
+        meetingAgents.find(isDecisionRoutingAgent)?.id
+      : undefined
   const agentRoles = normalizeChatAgentRoles(
     meetingAgents.map((agent) => agent.id),
     value.agentRoles,
+    preferredDirectorId,
   )
   if (!agentRoles) return null
 
@@ -276,9 +322,8 @@ function readMeeting(value: unknown): Meeting | null {
     updatedAt: value.updatedAt,
     status: value.status as MeetingStatus,
     transcript: transcript.filter((turn): turn is BoardroomTurn => turn !== null),
-    chatMessages: chatMessages.filter(
-      (message): message is BoardroomChatMessage => message !== null,
-    ),
+    chatMessages: normalizedChatMessages,
+    ...(chatMemory ? { chatMemory } : {}),
     reports: reports.filter((report): report is BoardroomReport => report !== null),
     synthesis: value.synthesis,
     error: value.error,
@@ -428,7 +473,6 @@ function agentsMatch(first: AgentConfig, second: AgentConfig): boolean {
   return (
     first.name === second.name &&
     first.role === second.role &&
-    first.defaultChatRole === second.defaultChatRole &&
     first.provider === second.provider &&
     first.model === second.model &&
     JSON.stringify(first.modelCapabilities ?? {}) ===
